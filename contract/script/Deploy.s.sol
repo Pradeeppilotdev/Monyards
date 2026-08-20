@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Script, console} from "forge-std/Script.sol";
+import {LanyardNFT} from "../src/LanyardNFT.sol";
+
+contract DeployLanyardNFT is Script {
+    function run() external returns (LanyardNFT nft) {
+        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        uint256 mintPrice = vm.envOr("MINT_PRICE", uint256(0));
+        uint256 maxSupply = vm.envOr("MAX_SUPPLY", uint256(1000));
+
+        vm.startBroadcast(deployerKey);
+        nft = new LanyardNFT(mintPrice, maxSupply);
+        nft.setMintEnabled(true);
+        vm.stopBroadcast();
+
+        console.log("LanyardNFT deployed at", address(nft));
+        console.log("mintPrice", mintPrice);
+        console.log("maxSupply", maxSupply);
+    }
+}

@@ -1,0 +1,47 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: radial-gradient(circle at 50% 25%, #1c1b2e 0%, #0a0a12 100%);
+  color: #fff;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.lanyard-wrapper {
+  height: 100vh;
+}
+
+.hint {
+  position: fixed;
+  bottom: 22px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+  user-select: none;
+  animation: hint-fade 6s ease forwards;
+}
+
+@keyframes hint-fade {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
