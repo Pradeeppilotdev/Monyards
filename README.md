@@ -19,6 +19,9 @@ LanyardNFT (ERC-721)
 |--------------|--------------------------------------------------------------|
 | `contract/`  | Foundry project: `LanyardNFT.sol`, deploy script, tests      |
 | `animation/` | Vite app building ONE self-contained HTML + `bake.mjs`       |
+| `server/`    | Express API: per-mint bake + IPFS pinning (`/api/bake`)      |
+| `mint/`      | Mint DApp: username input, live preview, wallet mint         |
+| `shared/`    | Card SVG renderer shared by bake CLI, server and frontend    |
 
 ## 1. Contract (`contract/`)
 
@@ -93,30 +96,65 @@ Open the baked file directly in a browser -- the card should swing under
 physics and be draggable. Also open it **inside a sandboxed iframe**, since
 that is the environment wallets and OpenSea render `animation_url` in.
 
-### Mint pipeline (next step to build)
+### Mint flow (built)
 
-For each mint, before calling `mint(string uri)`:
+The mint frontend (`mint/`) talks to the bake server (`server/`) and then sends
+the mint transaction from the user's wallet. The server never holds keys — it
+only does off-chain baking + pinning.
 
-1. User types an X handle. Best-effort fetch of name + PFP -- unavatar.io for
-   the PFP; the syndication timeline only as a name *autofill* with a ~2s
-   timeout and a manual fallback. Never block the mint on this fetch.
-2. Render the live preview card (same `<Lanyard />` component in the page).
-3. `node bake.mjs --card-json ./card.json` → per-mint HTML.
-4. Pin the HTML → `animation_url`. Pin a static card render → `image`. Build
-   the metadata JSON and pin it → `tokenURI`.
-5. Broadcast `mint(tokenURI)`.
+```bash
+# 1. Build the animation page once (produces the dist/index.html template)
+cd animation && npm install && npm run build
 
-Keep the `image` field a good static render -- most wallets never execute JS
-and only show `image`, so a blank thumbnail makes the NFT look broken even when
-the `animation_url` is fine.
+# 2. Start the bake server (dry-run pinning until PINATA_JWT is set)
+cd ../server && cp .env.example .env && npm install && npm start
+
+# 3. Run the mint DApp (proxies /api to the server in dev)
+cd ../mint && npm install && npm run dev
+```
+
+Flow for one mint:
+
+1. User types an X handle. The page fetches the PFP via unavatar.io and renders
+   a live `<Lanyard />` preview with the same card SVG that will be baked.
+2. On "Mint", the frontend POSTs `/api/bake` `{ username, name, pfp }`.
+3. The server renders the front card SVG, bakes both card faces into the built
+   HTML (`bakeHtml`), and pins three things: the HTML (`animation_url`), the
+   card image (`image`), and the metadata JSON (`tokenURI`).
+4. The frontend reads `mintPrice()` from the contract and broadcasts
+   `mint(tokenURI)` from the connected wallet.
+5. After the mint the page offers **Record share clip**: it captures the live
+   WebGL preview via `canvas.captureStream` + `MediaRecorder` while driving a
+   scripted sideways pull (`driveRef.pull()` in `Lanyard.jsx`), so the card
+   visibly swings on the rope. The resulting WebM can be downloaded and posted
+   to X — no server involved, recording happens fully in the browser
+   (`mint/src/record.js`).
+
+Keep the `image` field a good static render — most wallets never execute JS and
+only show `image`, so a blank thumbnail makes the NFT look broken even when the
+`animation_url` is fine.
+
+### Production checklist
+
+- Set `PINATA_JWT` in `server/.env` to turn on real IPFS pinning (without it the
+  server returns non-resolvable fake CIDs).
+- Set `CONTRACT_ADDRESS` (and `CHAIN_ID` / `RPC_URL` / `EXPLORER_URL`) after
+  deploying the contract.
+- Move `card.glb` to IPFS-by-CID to cut the baked HTML from ~6.5 MB to a few
+  hundred KB (see constraints below).
+- Test the baked HTML inside a sandboxed iframe — that's how wallets and
+  marketplaces render `animation_url`.
 
 ## Known constraints
 
 - The syndication endpoint is undocumented and flaky (empty 200s, occasional IP
   blocks). Design for it to fail: the mint path must work with just a typed
   name and a PFP.
-- The baked HTML is ~6.5 MB because the GLB card is inlined. Fine for a
-  hackathon; if size matters later, host the GLB on IPFS and reference it by
-  CID instead of inlining.
-- Test the physics inside a sandboxed iframe early -- that environment is
-  stricter than your own site (no guarantees on WebGL context or load budget).
+- The baked HTML is ~6.5 MB because the GLB card is inlined. For production,
+  host `card.glb` and the large textures on IPFS and reference them by CID from
+  the HTML instead of inlining — the page drops to a few hundred KB and IPFS
+  requests can be served through a public gateway or a dedicated pinning
+  provider for latency.
+- The sandboxed-iframe render environment is stricter than your own site (no
+  guarantees on WebGL context or load budget) — verify the baked HTML there
+  before launch.
