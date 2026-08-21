@@ -9,6 +9,10 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 export default defineConfig({
   plugins: [react(), viteSingleFile()],
   assetsInclude: ['**/*.glb'],
+  server: {
+    port: 5174,
+    strictPort: true,
+  },
   build: {
     target: 'es2020',
     assetsInlineLimit: 100000000,

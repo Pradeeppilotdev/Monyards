@@ -77,11 +77,27 @@ if (baked.includes(BACK_TOKEN)) console.log('  note: back token left unreplaced'
 // Shared bake core — also used by the server. Returns the baked HTML string.
 // An unreplaced token is left in place: the page renders its built-in card
 // texture when a token is present, so an un-baked file is still viewable.
-export async function bakeHtml({ front, back }) {
+export async function bakeHtml({ front, back, meta }) {
   const html = await readFile(TEMPLATE, 'utf8')
   let baked = html
   if (front) baked = baked.replaceAll(FRONT_TOKEN, () => front)
   if (back) baked = baked.replaceAll(BACK_TOKEN, () => back)
+  if (meta) {
+    const escAttr = (s) =>
+      String(s).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    const tags = [
+      meta.title ? `<meta property="og:title" content="${escAttr(meta.title)}" />` : '',
+      meta.description ? `<meta property="og:description" content="${escAttr(meta.description)}" />` : '',
+      meta.image ? `<meta property="og:image" content="${escAttr(meta.image)}" />` : '',
+      meta.image ? `<meta name="twitter:card" content="summary_large_image" />` : '',
+      meta.image ? `<meta name="twitter:image" content="${escAttr(meta.image)}" />` : '',
+      meta.url ? `<meta property="og:url" content="${escAttr(meta.url)}" />` : '',
+      meta.url ? `<meta property="og:type" content="website" />` : '',
+    ]
+      .filter(Boolean)
+      .join('\n    ')
+    if (tags) baked = baked.replace('</title>', `</title>\n    ${tags}`)
+  }
   return baked
 }
 

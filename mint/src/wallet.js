@@ -18,16 +18,27 @@ export const monadTestnet = defineChain({
   blockExplorers: { default: { name: 'MonadScan', url: 'https://testnet.monadscan.com' } },
 })
 
+const metadata = {
+  name: 'Monad Lanyard',
+  description: 'Interactive physics lanyard cards on Monad',
+  url: typeof location !== 'undefined' ? location.origin : 'https://lanyard.monad',
+  icons: [],
+}
+
+// Adapter is created unconditionally so WagmiProvider always has a config —
+// AppKit modal only activates when PROJECT_ID is set (mirrors ArcProof).
+export const wagmiAdapter = new WagmiAdapter({
+  networks: [monadTestnet],
+  projectId: HAS_APPKIT ? PROJECT_ID : '00000000000000000000000000000000',
+  ssr: false,
+})
+
 export const appKitModal = HAS_APPKIT
   ? createAppKit({
-      adapters: [new WagmiAdapter({ networks: [monadTestnet], projectId: PROJECT_ID, ssr: false })],
+      adapters: [wagmiAdapter],
       networks: [monadTestnet],
-      metadata: {
-        name: 'Monad Lanyard',
-        description: 'Interactive physics lanyard cards on Monad',
-        url: typeof location !== 'undefined' ? location.origin : 'https://lanyard.monad',
-        icons: [],
-      },
+      projectId: PROJECT_ID,
+      metadata,
       features: { analytics: false },
     })
   : null

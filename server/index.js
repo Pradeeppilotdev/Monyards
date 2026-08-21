@@ -27,6 +27,11 @@ const CONFIG = {
   symbol: 'MLYD',
 }
 
+function gatewayUrl(cid) {
+  const base = (process.env.PINATA_GATEWAY || 'https://ipfs.io').replace(/\/$/, '')
+  return `${base}/ipfs/${cid}`
+}
+
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '25mb' }))
@@ -78,10 +83,6 @@ app.post('/api/share', async (req, res) => {
 app.post('/api/bake', async (req, res) => {
   const { username, name, pfp, front, back } = req.body || {}
 
-  if (!username && !name && !front) {
-    return res.status(400).json({ error: 'provide username, name or a front image' })
-  }
-
   const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() : ''
   const displayName = name || (handle ? `@${handle}` : 'Monad Holder')
 
@@ -91,20 +92,40 @@ app.post('/api/bake', async (req, res) => {
     const frontUrl = front ? await toDataUrl(front) : await renderCardSvg({ pfp, username: handle, name: displayName })
     const backUrl = back ? await toDataUrl(back) : null
 
-    const baked = await bakeHtml({ front: frontUrl, back: backUrl })
-
-    // Pin the two files first, then the metadata (it references their CIDs).
+    // Pin image first so its gateway URL can be embedded as og:image in the HTML.
     const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(frontUrl)
-    const [htmlCid, imageCid] = await Promise.all([
-      pinFile({ content: baked, contentType: 'text/html', filename: 'index.html' }),
-      pinFile({ content: imageBuffer, contentType: imageMime, filename: 'card' + extFor(imageMime) }),
-    ])
+    const imageCid = await pinFile({ content: imageBuffer, contentType: imageMime, filename: 'card' + extFor(imageMime) })
+    const imageGateway = gatewayUrl(imageCid)
+
+    const title = `Monad Lanyard — ${displayName}`
+    const description = handle
+      ? `Interactive Monad lanyard card for @${handle}. Drag the card on-chain.`
+      : 'Interactive Monad lanyard card. Drag the card on-chain.'
+
+    // Bake HTML with OG/Twitter meta so the IPFS gateway link unfurls with the card image on X.
+    let baked = await bakeHtml({
+      front: frontUrl,
+      back: backUrl,
+      meta: { title, description, image: imageGateway },
+    })
+    // Patch og:url once we know the HTML CID — two-phase: placeholder then replace.
+    // First pin to get CID, then re-bake with final URL if we want self-referential og:url.
+    let htmlCid = await pinFile({ content: baked, contentType: 'text/html', filename: 'index.html' })
+    const htmlGateway = gatewayUrl(htmlCid)
+    // Re-bake with final og:url for perfect unfurl (re-pin if changed)
+    const bakedWithUrl = await bakeHtml({
+      front: frontUrl,
+      back: backUrl,
+      meta: { title, description, image: imageGateway, url: htmlGateway },
+    })
+    if (bakedWithUrl !== baked) {
+      htmlCid = await pinFile({ content: bakedWithUrl, contentType: 'text/html', filename: 'index.html' })
+      baked = bakedWithUrl
+    }
+
     const metaCid = await pinJson({
-      name: `Monad Lanyard — ${displayName}`,
-      description:
-        handle
-          ? `Interactive Monad lanyard card for @${handle}. Drag the card on-chain.`
-          : 'Interactive Monad lanyard card. Drag the card on-chain.',
+      name: title,
+      description,
       image: `ipfs://${imageCid}`,
       animation_url: `ipfs://${htmlCid}`,
       attributes: [{ trait_type: 'handle', value: handle || 'unknown' }],
@@ -113,7 +134,9 @@ app.post('/api/bake', async (req, res) => {
     res.json({
       tokenURI: `ipfs://${metaCid}`,
       animationUrl: `ipfs://${htmlCid}`,
+      animationGateway: gatewayUrl(htmlCid),
       image: `ipfs://${imageCid}`,
+      imageGateway,
       htmlBytes: Buffer.byteLength(baked),
       handle,
       displayName,

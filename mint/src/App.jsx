@@ -5,8 +5,9 @@ import backCard from '../../animation/src/assets/back-card.svg'
 import { abi } from './abi'
 import { HAS_APPKIT, PROJECT_ID, appKitModal, monadTestnet } from './wallet'
 import { createPublicClient, createWalletClient, custom, formatEther, http } from 'viem'
-import { useAppKit, useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
+import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
 import { recordShareClip } from './record'
+import Silk from './Silk'
 
 const AVATAR = (handle) => `https://unavatar.io/x/${encodeURIComponent(handle)}`
 
@@ -19,13 +20,10 @@ function useDebounced(value, delay) {
   return v
 }
 
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(r.result)
-    r.onerror = reject
-    r.readAsDataURL(blob)
-  })
+function ipfsToGateway(ipfsUrl) {
+  if (!ipfsUrl) return null
+  const cid = ipfsUrl.replace('ipfs://', '')
+  return `https://ipfs.io/ipfs/${cid}`
 }
 
 const XIcon = (props) => (
@@ -51,6 +49,7 @@ export default function App() {
   const [touched, setTouched] = useState(false)
   const driveRef = useRef(null)
   const providerRef = useRef(null)
+  const panelRef = useRef(null)
 
   const debouncedHandle = useDebounced(handle, 600)
   const trimmed = debouncedHandle.replace(/^@/, '').trim()
@@ -129,21 +128,23 @@ export default function App() {
   }
 
   async function shareOnX() {
-    if (!clip) return
     setSharing(true)
     setError(null)
     try {
-      const dataUrl = await blobToDataUrl(clip.blob)
-      const res = await fetch('/api/share', {
+      const res = await fetch('/api/bake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataUrl, handle: trimmed || undefined }),
+        body: JSON.stringify({
+          username: trimmed || undefined,
+          name: name || undefined,
+          pfp: pfpUrl || undefined,
+        }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'upload failed')
-      const text = encodeURIComponent(
-        `just swung my #Monad lanyard card — drag it, swing it, mint yours:\n${data.url}`
-      )
+      if (!res.ok) throw new Error(data.error || 'bake failed')
+      const gateway = data.animationGateway || ipfsToGateway(data.animationUrl)
+      const handleTag = trimmed ? `@${trimmed}` : name || 'my card'
+      const text = encodeURIComponent(`Made my Monad Lanyard for ${handleTag} — drag it live 👉\n${gateway}`)
       const intent = `https://twitter.com/intent/tweet?text=${text}`
       const w = window.open(intent, '_blank')
       if (!w) setShareLink(intent) // popup blocked — surface a clickable link instead
@@ -208,15 +209,30 @@ export default function App() {
     }
 
   return (
-    <div className="page">
-      {HAS_APPKIT && <AppKitBridge setAccount={setAccount} providerRef={providerRef} />}
-      <div className="panel">
-        <div className="brand">
+    <>
+      <div className="silk-bg" aria-hidden>
+        <Silk color="#7325B5" speed={5} scale={1} noiseIntensity={1.5} rotation={0} />
+      </div>
+      <header className="topbar">
+        <div className="brand top-brand">
           <span className="brand-mark" />
           <span>MONAD LYRD</span>
         </div>
+      </header>
+      <div className="page">
+      {HAS_APPKIT && <AppKitBridge setAccount={setAccount} providerRef={providerRef} />}
+      <div
+        className="panel"
+        ref={panelRef}
+        onMouseMove={(e) => {
+          const r = panelRef.current?.getBoundingClientRect()
+          if (!r) return
+          panelRef.current.style.setProperty('--mx', `${e.clientX - r.left}px`)
+          panelRef.current.style.setProperty('--my', `${e.clientY - r.top}px`)
+        }}
+      >
         <h1>
-          Your card is <span className="grad">live</span>
+          Your card is <span className="grad shimmer">live</span>
         </h1>
         <p className="sub">Type an X handle to make it yours. Drag it, swing it, share it — no wallet needed.</p>
 
@@ -244,16 +260,15 @@ export default function App() {
           </div>
         </label>
 
-        <div className="btn-row">
-          <button className="btn primary" onClick={recordClip} disabled={recording}>
-            {recording ? 'Recording…' : 'Record clip'}
-          </button>
-          <button className="btn x-btn" onClick={shareOnX} disabled={!clip || sharing}>
-            <XIcon />
-            {sharing ? 'Pinning…' : 'Share on X'}
-          </button>
-        </div>
-        <p className="micro">Records your card swinging, pins it to IPFS and opens a ready-to-post X draft.</p>
+        <button className="btn x-btn shimmer-btn" onClick={shareOnX} disabled={sharing} style={{ width: '100%', marginTop: 22 }}>
+          <XIcon />
+          <span>{sharing ? 'Baking…' : 'Share on X'}</span>
+        </button>
+        <p className="micro">Posts your live card — X shows the card image right in the tweet.</p>
+
+        <button className="btn record-ghost" onClick={recordClip} disabled={recording} style={{ width: '100%', marginTop: 12 }}>
+          {recording ? 'Recording…' : '○ Record a loop of your card'}
+        </button>
 
         {clip && (
           <div className="clip-area">
@@ -279,31 +294,33 @@ export default function App() {
             <div className="warn">Contract not deployed yet — preview and share work fine, minting opens soon.</div>
           )}
 
-          {HAS_APPKIT ? (
-            <button className="btn secondary wallet-btn" onClick={connect}>
-              {account ? (
-                <>
-                  <span className="dot" />
-                  {account.slice(0, 6)}…{account.slice(-4)}
-                </>
-              ) : (
-                'Connect wallet'
-              )}
-            </button>
-          ) : account ? (
-            <div className="wallet-row">
-              <span className="dot" />
-              {account.slice(0, 6)}…{account.slice(-4)}
-            </div>
-          ) : (
-            <button className="btn secondary wallet-btn" onClick={connect}>
-              Connect wallet
-            </button>
-          )}
+          <div className="mint-actions">
+            {HAS_APPKIT ? (
+              <button className="btn secondary wallet-btn" onClick={connect}>
+                {account ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span className="dot" />
+                    {account.slice(0, 6)}…{account.slice(-4)}
+                  </span>
+                ) : (
+                  'Connect wallet'
+                )}
+              </button>
+            ) : account ? (
+              <div className="wallet-row">
+                <span className="dot" />
+                {account.slice(0, 6)}…{account.slice(-4)}
+              </div>
+            ) : (
+              <button className="btn secondary wallet-btn" onClick={connect}>
+                Connect wallet
+              </button>
+            )}
 
-          <button className="btn primary mint-btn" disabled={busy || !account} onClick={mint}>
-            {mintLabel}
-          </button>
+            <button className="btn primary mint-btn" disabled={busy || !account} onClick={mint}>
+              {mintLabel}
+            </button>
+          </div>
 
           {error && <div className="error">{error}</div>}
 
@@ -330,14 +347,15 @@ export default function App() {
             frontImage={preview}
             backImage={backCard}
             imageFit="cover"
-            lanyardWidth={0.62}
+            lanyardWidth={0.78}
             driveRef={driveRef}
           />
         )}
-        {!touched && <div className="drag-hint">Grab the card — it&apos;s real physics</div>}
+        <div className={`drag-hint ${touched ? 'drag-hint--hidden' : ''}`}>Grab the card — it&apos;s real physics</div>
         {recording && <div className="rec-badge">REC</div>}
       </div>
     </div>
+    </>
   )
 }
 
