@@ -113,22 +113,27 @@ cd ../server && cp .env.example .env && npm install && npm start
 cd ../mint && npm install && npm run dev
 ```
 
-Flow for one mint:
+Flow for one visitor:
 
-1. User types an X handle. The page fetches the PFP via unavatar.io and renders
-   a live `<Lanyard />` preview with the same card SVG that will be baked.
-2. On "Mint", the frontend POSTs `/api/bake` `{ username, name, pfp }`.
-3. The server renders the front card SVG, bakes both card faces into the built
-   HTML (`bakeHtml`), and pins three things: the HTML (`animation_url`), the
-   card image (`image`), and the metadata JSON (`tokenURI`).
-4. The frontend reads `mintPrice()` from the contract and broadcasts
-   `mint(tokenURI)` from the connected wallet.
-5. After the mint the page offers **Record share clip**: it captures the live
-   WebGL preview via `canvas.captureStream` + `MediaRecorder` while driving a
-   scripted sideways pull (`driveRef.pull()` in `Lanyard.jsx`), so the card
-   visibly swings on the rope. The resulting WebM can be downloaded and posted
-   to X — no server involved, recording happens fully in the browser
-   (`mint/src/record.js`).
+1. The lanyard is live the moment the page opens — no wallet, no input. A
+   default card hangs on the rope and can be dragged/swung immediately.
+   Controls sit on the left; the interactive card fills the right.
+2. The user types an X handle; the page fetches the PFP via unavatar.io and
+   re-renders the live preview with the same card SVG that will be baked.
+3. **Record clip** (no wallet needed): captures the WebGL preview via
+   `canvas.captureStream` + `MediaRecorder` while driving a scripted sideways
+   pull (`driveRef.pull()` in `Lanyard.jsx`), so the card visibly swings.
+4. **Share on X**: uploads the recorded WebM to `POST /api/share`, which pins
+   it to IPFS and returns a gateway URL, then opens an X web-intent draft with
+   that link pre-filled. (X only embeds players for whitelisted hosts — the
+   IPFS link posts as a clickable card. A dedicated share page with
+   `twitter:player` tags would give true inline playback later.)
+5. Minting is optional: wallet connect runs through **Reown AppKit**
+   (WalletConnect) when `VITE_REOWN_PROJECT_ID` is set in `mint/.env`
+   (get a free project id at cloud.reown.com); without it the app falls back
+   to plain injected wallets. Connect → POST `/api/bake`
+   `{ username, name, pfp }` → server bakes + pins HTML/`image`/metadata →
+   frontend broadcasts `mint(tokenURI)` from the connected wallet.
 
 Keep the `image` field a good static render — most wallets never execute JS and
 only show `image`, so a blank thumbnail makes the NFT look broken even when the

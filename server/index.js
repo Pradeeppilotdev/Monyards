@@ -35,16 +35,45 @@ app.get('/api/config', (_req, res) => {
   res.json({ ...CONFIG, pinningEnabled })
 })
 
-// Decode a data URL into { buffer, mime }.
+// Decode a data URL into { buffer, mime }. Tolerates media-type parameters
+// like `data:video/webm;codecs=vp9;base64,...` (MediaRecorder output).
 function dataUrlToBuffer(dataUrl) {
-  const m = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl)
+  const m = /^data:([^;,]+)(?:;[^;,]+)*;base64,(.*)$/s.exec(dataUrl)
   if (!m) throw new Error('expected a base64 data URL')
   return { buffer: Buffer.from(m[2], 'base64'), mime: m[1] }
 }
 
 function extFor(mime) {
-  return { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/svg+xml': '.svg' }[mime] || ''
+  return {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg',
+    'video/webm': '.webm',
+    'video/mp4': '.mp4',
+  }[mime] || ''
 }
+
+// POST /api/share — pins a recorded share-clip (webm data URL) to IPFS and
+// returns a public gateway URL that gets embedded in the X intent draft.
+app.post('/api/share', async (req, res) => {
+  const { dataUrl, handle } = req.body || {}
+  if (!dataUrl) return res.status(400).json({ error: 'provide a clip dataUrl' })
+  try {
+    const { buffer, mime } = dataUrlToBuffer(dataUrl)
+    if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'clip too large' })
+    const cid = await pinFile({
+      content: buffer,
+      contentType: mime || 'video/webm',
+      filename: `lanyard-${(handle || 'clip').replace(/[^a-z0-9_]/gi, '')}.webm`,
+    })
+    const gateway = process.env.PINATA_GATEWAY || 'https://ipfs.io'
+    res.json({ cid, url: `${gateway}/ipfs/${cid}`, bytes: buffer.length })
+  } catch (err) {
+    console.error('share pin failed:', err)
+    res.status(500).json({ error: err.message || 'pin failed' })
+  }
+})
 
 app.post('/api/bake', async (req, res) => {
   const { username, name, pfp, front, back } = req.body || {}

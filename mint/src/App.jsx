@@ -3,7 +3,9 @@ import Lanyard from '../../animation/src/Lanyard'
 import { renderCardSvg } from '../../shared/card-svg'
 import backCard from '../../animation/src/assets/back-card.svg'
 import { abi } from './abi'
+import { HAS_APPKIT, PROJECT_ID, appKitModal, monadTestnet } from './wallet'
 import { createPublicClient, createWalletClient, custom, formatEther, http } from 'viem'
+import { useAppKit, useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
 import { recordShareClip } from './record'
 
 const AVATAR = (handle) => `https://unavatar.io/x/${encodeURIComponent(handle)}`
@@ -17,6 +19,21 @@ function useDebounced(value, delay) {
   return v
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = reject
+    r.readAsDataURL(blob)
+  })
+}
+
+const XIcon = (props) => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" {...props}>
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+  </svg>
+)
+
 export default function App() {
   const [config, setConfig] = useState(null)
   const [handle, setHandle] = useState('')
@@ -29,7 +46,11 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [recording, setRecording] = useState(false)
   const [clip, setClip] = useState(null)
+  const [sharing, setSharing] = useState(false)
+  const [shareLink, setShareLink] = useState(null)
+  const [touched, setTouched] = useState(false)
   const driveRef = useRef(null)
+  const providerRef = useRef(null)
 
   const debouncedHandle = useDebounced(handle, 600)
   const trimmed = debouncedHandle.replace(/^@/, '').trim()
@@ -43,25 +64,24 @@ export default function App() {
       .catch((e) => setError('Could not load config: ' + e.message))
   }, [])
 
-  // Regenerate the live preview whenever the identity changes.
+  // Live preview — mounts instantly with a default card, personalizes as they type.
   useEffect(() => {
     let cancelled = false
-    if (!trimmed && !name) return setPreview(null)
     renderCardSvg({ pfp: pfpUrl, username: trimmed, name })
       .then((front) => !cancelled && setPreview(front))
-      .catch(() => !cancelled && setPreview(null))
+      .catch(() => {})
     return () => (cancelled = true)
   }, [trimmed, name, pfpUrl])
 
-  const { publicClient, chain } = useMemo(() => {
-    if (!config) return {}
+  const publicClient = useMemo(() => {
+    if (!config) return null
     const chain = {
       id: config.chainId,
       name: 'Monad',
       nativeCurrency: { name: 'Monad', symbol: 'MON', decimals: 18 },
       rpcUrls: { default: { http: [config.rpcUrl] } },
     }
-    return { chain, publicClient: createPublicClient({ chain, transport: http(config.rpcUrl) }) }
+    return createPublicClient({ chain, transport: http(config.rpcUrl) })
   }, [config])
 
   useEffect(() => {
@@ -72,21 +92,65 @@ export default function App() {
       .catch(() => setMintPrice(null))
   }, [publicClient, config])
 
+  async function getProvider() {
+    if (HAS_APPKIT) {
+      const p = providerRef.current
+      if (!p) throw new Error('Connect your wallet first.')
+      return p
+    }
+    if (!window.ethereum) throw new Error('No wallet found. Install MetaMask or Rabby.')
+    return window.ethereum
+  }
+
   async function connect() {
     try {
-      if (!window.ethereum) throw new Error('No wallet found. Install MetaMask or Rabby.')
-      const [addr] = await window.ethereum.request({ method: 'eth_requestAccounts' })
+      if (HAS_APPKIT) return appKitModal.open()
+      const eth = await getProvider()
+      const [addr] = await eth.request({ method: 'eth_requestAccounts' })
       setAccount(addr)
-      if (chain && config?.contractAddress) {
-        const price = await publicClient.readContract({
-          address: config.contractAddress,
-          abi,
-          functionName: 'mintPrice',
-        })
-        setMintPrice(price)
-      }
     } catch (e) {
       setError(e.message)
+    }
+  }
+
+  async function recordClip() {
+    setRecording(true)
+    setError(null)
+    try {
+      const canvas = document.querySelector('.preview canvas')
+      if (!canvas) throw new Error('Preview canvas not found')
+      const blob = await recordShareClip({ canvas, driveRef })
+      setClip({ blob, url: URL.createObjectURL(blob), mime: blob.type })
+    } catch (e) {
+      setError('Clip recording failed: ' + e.message)
+    } finally {
+      setRecording(false)
+    }
+  }
+
+  async function shareOnX() {
+    if (!clip) return
+    setSharing(true)
+    setError(null)
+    try {
+      const dataUrl = await blobToDataUrl(clip.blob)
+      const res = await fetch('/api/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, handle: trimmed || undefined }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'upload failed')
+      const text = encodeURIComponent(
+        `just swung my #Monad lanyard card — drag it, swing it, mint yours:\n${data.url}`
+      )
+      const intent = `https://twitter.com/intent/tweet?text=${text}`
+      const w = window.open(intent, '_blank')
+      if (!w) setShareLink(intent) // popup blocked — surface a clickable link instead
+    } catch (e) {
+      setError('Share failed: ' + e.message)
+    } finally {
+      setSharing(false)
     }
   }
 
@@ -109,7 +173,8 @@ export default function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'bake failed')
 
-      const walletClient = createWalletClient({ account, chain, transport: custom(window.ethereum) })
+      const eth = await getProvider()
+      const walletClient = createWalletClient({ account, chain: monadTestnet, transport: custom(eth) })
       const hash = await walletClient.writeContract({
         address: config.contractAddress,
         abi,
@@ -120,56 +185,45 @@ export default function App() {
       })
       setResult({ hash, tokenURI: data.tokenURI, animationUrl: data.animationUrl })
     } catch (e) {
-      setError(e.message)
+      setError(e.shortMessage || e.message)
     } finally {
       setBusy(false)
     }
   }
 
-  const priceLabel = mintPrice != null ? formatEther(mintPrice) : '...'
+  const isFree = mintPrice === 0n
+  const priceLabel = mintPrice != null ? formatEther(mintPrice) : null
+  const mintLabel = busy ? 'Minting…' : isFree ? 'Free mint' : priceLabel ? `Mint · ${priceLabel} MON` : 'Mint'
   const txUrl = result && config ? `${config.explorer}/tx/${result.hash}` : null
 
-  async function recordClip() {
-    setRecording(true)
-    setError(null)
-    try {
-      const canvas = document.querySelector('.preview canvas')
-      if (!canvas) throw new Error('Preview canvas not found')
-      const blob = await recordShareClip({ canvas, driveRef })
-      setClip({ url: URL.createObjectURL(blob), mime: blob.type })
-      return blob
-    } catch (e) {
-      setError('Clip recording failed: ' + e.message)
-    } finally {
-      setRecording(false)
+  if (import.meta.env.DEV)
+    window.__app = {
+      recordClip,
+      shareOnX,
+      driveRef,
+      fakeResult: () => {
+        setAccount('0x68a691c461c54ce767c6d539022fa344397b9f31')
+        setResult({ hash: '0x' + '0'.repeat(64), tokenURI: 'ipfs://x', animationUrl: 'ipfs://y' })
+      },
     }
-  }
-
-  if (import.meta.env.DEV) window.__app = {
-    recordClip,
-    driveRef,
-    fakeResult: () => {
-      setAccount('0x68a691c461c54ce767c6d539022fa344397b9f31')
-      setResult({ hash: '0x' + '0'.repeat(64), tokenURI: 'ipfs://x', animationUrl: 'ipfs://y' })
-    },
-  }
 
   return (
     <div className="page">
+      {HAS_APPKIT && <AppKitBridge setAccount={setAccount} providerRef={providerRef} />}
       <div className="panel">
         <div className="brand">
           <span className="brand-mark" />
-          <span>MONAD LANYARD</span>
+          <span>MONAD LYRD</span>
         </div>
-        <h1>Mint your lanyard card</h1>
-        <p className="sub">
-          Enter an X handle and get an interactive, physics-powered lanyard card on-chain — fully on IPFS, no external
-          requests.
-        </p>
+        <h1>
+          Your card is <span className="grad">live</span>
+        </h1>
+        <p className="sub">Type an X handle to make it yours. Drag it, swing it, share it — no wallet needed.</p>
 
         <label className="field">
-          <span>X handle</span>
-          <div className="row">
+          <span>Handle</span>
+          <div className="control">
+            <span className="control-icon">@</span>
             <input
               value={handle}
               onChange={(e) => setHandle(e.target.value)}
@@ -178,86 +232,126 @@ export default function App() {
               spellCheck={false}
             />
             {pfpUrl && (
-              <img
-                className="avatar"
-                src={pfpUrl}
-                alt=""
-                onError={(e) => (e.currentTarget.style.opacity = 0)}
-              />
+              <img className="avatar" src={pfpUrl} alt="" onError={(e) => (e.currentTarget.style.opacity = 0)} />
             )}
           </div>
         </label>
 
         <label className="field">
-          <span>Display name (optional)</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Vitalik" />
+          <span>Display name</span>
+          <div className="control">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Optional" />
+          </div>
         </label>
 
-        {!config?.contractAddress && (
-          <div className="warn">Contract not deployed yet — you can preview, minting opens soon.</div>
-        )}
-
-        {account ? (
-          <div className="wallet-row">
-            <span className="dot" />
-            {account.slice(0, 6)}…{account.slice(-4)}
-          </div>
-        ) : (
-          <button className="btn secondary" onClick={connect}>
-            Connect wallet
+        <div className="btn-row">
+          <button className="btn primary" onClick={recordClip} disabled={recording}>
+            {recording ? 'Recording…' : 'Record clip'}
           </button>
+          <button className="btn x-btn" onClick={shareOnX} disabled={!clip || sharing}>
+            <XIcon />
+            {sharing ? 'Pinning…' : 'Share on X'}
+          </button>
+        </div>
+        <p className="micro">Records your card swinging, pins it to IPFS and opens a ready-to-post X draft.</p>
+
+        {clip && (
+          <div className="clip-area">
+            <video className="clip-video" src={clip.url} controls loop muted />
+            <a className="save-link" href={clip.url} download={`lanyard-${trimmed || 'card'}.webm`}>
+              or download the video ↓
+            </a>
+          </div>
         )}
 
-        <button className="btn primary" disabled={busy || !account} onClick={mint}>
-          {busy ? 'Baking + minting…' : `Mint — ${priceLabel} MON`}
-        </button>
+        {shareLink && (
+          <a className="save-link" href={shareLink} target="_blank" rel="noreferrer">
+            Popup blocked? Post here →
+          </a>
+        )}
 
-        {error && <div className="error">{error}</div>}
+        <div className="divider">
+          <span>want it forever?</span>
+        </div>
 
-        {result && (
-          <div className="success">
-            <p className="success-title">Minted! Your card is on-chain.</p>
-            <p className="success-sub">
-              Token minted to {account.slice(0, 6)}…{account.slice(-4)}. Record a clip and post it — that's how this
-              thing spreads.
-            </p>
-            <a className="tx-link" href={txUrl} target="_blank" rel="noreferrer">
-              View transaction →
-            </a>
-            <div className="clip-area">
-              {clip ? (
+        <div className="mint-box">
+          {!config?.contractAddress && (
+            <div className="warn">Contract not deployed yet — preview and share work fine, minting opens soon.</div>
+          )}
+
+          {HAS_APPKIT ? (
+            <button className="btn secondary wallet-btn" onClick={connect}>
+              {account ? (
                 <>
-                  <video className="clip-video" src={clip.url} controls loop muted />
-                  <a className="btn secondary" href={clip.url} download={`lanyard-${trimmed || 'card'}.webm`}>
-                    Download clip
-                  </a>
+                  <span className="dot" />
+                  {account.slice(0, 6)}…{account.slice(-4)}
                 </>
               ) : (
-                <button className="btn primary" onClick={recordClip} disabled={recording}>
-                  {recording ? 'Recording…' : 'Record share clip'}
-                </button>
+                'Connect wallet'
               )}
+            </button>
+          ) : account ? (
+            <div className="wallet-row">
+              <span className="dot" />
+              {account.slice(0, 6)}…{account.slice(-4)}
             </div>
-          </div>
-        )}
+          ) : (
+            <button className="btn secondary wallet-btn" onClick={connect}>
+              Connect wallet
+            </button>
+          )}
+
+          <button className="btn primary mint-btn" disabled={busy || !account} onClick={mint}>
+            {mintLabel}
+          </button>
+
+          {error && <div className="error">{error}</div>}
+
+          {result && (
+            <div className="success">
+              <p className="success-title">Minted! Your card is on-chain.</p>
+              <p className="success-sub">
+                Token minted to {account ? `${account.slice(0, 6)}…${account.slice(-4)}` : 'your wallet'}.
+              </p>
+              <a className="tx-link" href={txUrl} target="_blank" rel="noreferrer">
+                View transaction →
+              </a>
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="preview">
-        {preview ? (
+      <div className="preview" onPointerDown={() => setTouched(true)}>
+        {preview && (
           <Lanyard
-            position={[0, 0, 20]}
+            position={[0, -1.2, 10]}
             gravity={[0, -40, 0]}
             fov={26}
             frontImage={preview}
             backImage={backCard}
             imageFit="cover"
-            lanyardWidth={0.5}
+            lanyardWidth={0.62}
             driveRef={driveRef}
           />
-        ) : (
-          <div className="preview-empty">Your card preview appears here — type a handle.</div>
         )}
+        {!touched && <div className="drag-hint">Grab the card — it&apos;s real physics</div>}
+        {recording && <div className="rec-badge">REC</div>}
       </div>
     </div>
   )
 }
+
+// AppKit hooks live in their own component so the legacy path never touches them.
+function AppKitBridge({ setAccount, providerRef }) {
+  const { address } = useAppKitAccount()
+  const { walletProvider } = useAppKitProvider('eip155')
+  useEffect(() => {
+    setAccount(address || null)
+  }, [address, setAccount])
+  useEffect(() => {
+    providerRef.current = walletProvider || null
+  }, [walletProvider, providerRef])
+  return null
+}
+
+export { AppKitBridge, PROJECT_ID }
