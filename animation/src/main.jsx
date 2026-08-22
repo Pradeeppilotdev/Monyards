@@ -13,13 +13,13 @@ const backImage = isPlaceholder(BACK_IMAGE) ? backCard : BACK_IMAGE
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <Lanyard
-      position={[0, 0, 20]}
+      position={[0, -1.55, 10]}
       gravity={[0, -40, 0]}
       fov={26}
       frontImage={frontImage}
       backImage={backImage}
       imageFit="cover"
-      lanyardWidth={0.5}
+      lanyardWidth={0.78}
     />
     <div className="hint">drag the card to interact</div>
   </React.StrictMode>

@@ -193,9 +193,9 @@ function Band({
     }
   }, [driveRef]);
 
-  useRopeJoint(fixed, j1, [[0, 0, 0], [0, 0, 0], 1]);
-  useRopeJoint(j1, j2, [[0, 0, 0], [0, 0, 0], 1]);
-  useRopeJoint(j2, j3, [[0, 0, 0], [0, 0, 0], 1]);
+  useRopeJoint(fixed, j1, [[0, 0, 0], [0, 0, 0], 0.8]);
+  useRopeJoint(j1, j2, [[0, 0, 0], [0, 0, 0], 0.8]);
+  useRopeJoint(j2, j3, [[0, 0, 0], [0, 0, 0], 0.8]);
   useSphericalJoint(j3, card, [
     [0, 0, 0],
     [0, 1.92, 0]

@@ -26,6 +26,56 @@ function ipfsToGateway(ipfsUrl) {
   return `https://ipfs.io/ipfs/${cid}`
 }
 
+// Extract a per-mint palette from the PFP: downscale to 24x24, pick the most
+// vivid dominant color, then derive gradient stops + accent from it. The
+// portrait color is always blended with Monad purple (#836EF9) first so every
+// card stays on-brand while still carrying its portrait's color DNA. Fails
+// soft — any error returns null and the card keeps its default violet.
+async function extractPalette(imgUrl) {
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image()
+      im.crossOrigin = 'anonymous'
+      im.onload = () => resolve(im)
+      im.onerror = reject
+      im.src = imgUrl
+      setTimeout(() => reject(new Error('pfp load timeout')), 8000)
+    })
+    const c = document.createElement('canvas')
+    c.width = c.height = 24
+    const ctx = c.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return null
+    ctx.drawImage(img, 0, 0, 24, 24)
+    const { data } = ctx.getImageData(0, 0, 24, 24)
+    let best = null
+    let bestScore = -1
+    for (let i = 0; i < data.length; i += 4) {
+      const [r, g, b, a] = [data[i], data[i + 1], data[i + 2], data[i + 3]]
+      if (a < 200) continue
+      const max = Math.max(r, g, b), min = Math.min(r, g, b)
+      const sat = max === 0 ? 0 : (max - min) / max
+      // weight saturation + brightness toward vivid mids (avoid near-black/near-white)
+      const lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255
+      const score = sat * 1.6 + (lum > 0.18 && lum < 0.85 ? 0.5 : 0)
+      if (score > bestScore) { bestScore = score; best = [r, g, b] }
+    }
+    if (!best || bestScore < 0.25) return null // grayscale/dull pfp → keep default
+    const hex = ([r, g, b]) => '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
+    const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t)
+    const DARK = [11, 6, 22]
+    const MONAD_PURPLE = [131, 110, 249] // #836EF9 — every card stays rooted in the brand
+    const base = mix(best, MONAD_PURPLE, 0.55)
+    return {
+      bgTop: hex(mix(base, DARK, 0.9)),
+      bgMid: hex(mix(base, DARK, 0.7)),
+      bgBottom: hex(mix(base, DARK, 0.4)),
+      accent: hex(mix(base, [255, 255, 255], 0.15)),
+    }
+  } catch {
+    return null
+  }
+}
+
 const XIcon = (props) => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" {...props}>
     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
@@ -37,6 +87,7 @@ export default function App() {
   const [handle, setHandle] = useState('')
   const [name, setName] = useState('')
   const [preview, setPreview] = useState(null)
+  const [pfPalette, setPfPalette] = useState(null)
   const [account, setAccount] = useState(null)
   const [mintPrice, setMintPrice] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -50,6 +101,7 @@ export default function App() {
   const driveRef = useRef(null)
   const providerRef = useRef(null)
   const panelRef = useRef(null)
+  const recControllerRef = useRef(null)
 
   const debouncedHandle = useDebounced(handle, 600)
   const trimmed = debouncedHandle.replace(/^@/, '').trim()
@@ -64,11 +116,16 @@ export default function App() {
   }, [])
 
   // Live preview — mounts instantly with a default card, personalizes as they type.
+  // Palette is extracted from the PFP so the card carries its color DNA.
   useEffect(() => {
     let cancelled = false
-    renderCardSvg({ pfp: pfpUrl, username: trimmed, name })
-      .then((front) => !cancelled && setPreview(front))
-      .catch(() => {})
+    ;(async () => {
+      const palette = pfpUrl ? await extractPalette(pfpUrl) : null
+      if (cancelled) return
+      setPfPalette(palette)
+      const front = await renderCardSvg({ pfp: pfpUrl, username: trimmed, name, palette })
+      if (!cancelled) setPreview(front)
+    })()
     return () => (cancelled = true)
   }, [trimmed, name, pfpUrl])
 
@@ -113,18 +170,33 @@ export default function App() {
   }
 
   async function recordClip() {
+    if (recording) {
+      // Recording already in progress — treat the button as a cancel.
+      recControllerRef.current?.abort()
+      return
+    }
     setRecording(true)
     setError(null)
+    const ctl = new AbortController()
+    recControllerRef.current = ctl
     try {
       const canvas = document.querySelector('.preview canvas')
       if (!canvas) throw new Error('Preview canvas not found')
-      const blob = await recordShareClip({ canvas, driveRef })
+      const blob = await recordShareClip({ canvas, driveRef, signal: ctl.signal })
       setClip({ blob, url: URL.createObjectURL(blob), mime: blob.type })
     } catch (e) {
-      setError('Clip recording failed: ' + e.message)
+      if (e.name !== 'AbortError') setError('Clip recording failed: ' + e.message)
     } finally {
+      recControllerRef.current = null
       setRecording(false)
     }
+  }
+
+  function clearClip() {
+    setClip((c) => {
+      if (c) URL.revokeObjectURL(c.url)
+      return null
+    })
   }
 
   async function shareOnX() {
@@ -138,6 +210,7 @@ export default function App() {
           username: trimmed || undefined,
           name: name || undefined,
           pfp: pfpUrl || undefined,
+          palette: pfPalette || undefined,
         }),
       })
       const data = await res.json()
@@ -169,6 +242,7 @@ export default function App() {
           username: trimmed || undefined,
           name: name || undefined,
           pfp: pfpUrl || undefined,
+          palette: pfPalette || undefined,
         }),
       })
       const data = await res.json()
@@ -266,13 +340,20 @@ export default function App() {
         </button>
         <p className="micro">Posts your live card — X shows the card image right in the tweet.</p>
 
-        <button className="btn record-ghost" onClick={recordClip} disabled={recording} style={{ width: '100%', marginTop: 12 }}>
-          {recording ? 'Recording…' : '○ Record a loop of your card'}
+        <button
+          className={`btn record-ghost ${recording ? 'recording' : ''}`}
+          onClick={recordClip}
+          style={{ width: '100%', marginTop: 12 }}
+        >
+          {recording ? '■ Stop recording' : '○ Record a loop of your card'}
         </button>
 
         {clip && (
           <div className="clip-area">
-            <video className="clip-video" src={clip.url} controls loop muted />
+            <button className="clip-close" onClick={clearClip} title="Discard clip" aria-label="Discard clip">
+              ✕
+            </button>
+            <video className="clip-video" src={clip.url} controls loop muted playsInline />
             <a className="save-link" href={clip.url} download={`lanyard-${trimmed || 'card'}.webm`}>
               or download the video ↓
             </a>
@@ -341,7 +422,7 @@ export default function App() {
       <div className="preview" onPointerDown={() => setTouched(true)}>
         {preview && (
           <Lanyard
-            position={[0, -1.2, 10]}
+            position={[0, -1.55, 10]}
             gravity={[0, -40, 0]}
             fov={26}
             frontImage={preview}

@@ -12,7 +12,7 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import { renderCardSvg, toDataUrl, mimeFromName } from '../shared/card-svg.js'
+import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
 import { pinFile, pinJson, pinningEnabled } from './ipfs.js'
 
@@ -88,8 +88,10 @@ app.post('/api/bake', async (req, res) => {
 
   try {
     // Normalize the two card faces to data URLs (front auto-generated from
-    // username/name/pfp when not supplied).
-    const frontUrl = front ? await toDataUrl(front) : await renderCardSvg({ pfp, username: handle, name: displayName })
+    // username/name/pfp when not supplied; palette is client-extracted and
+    // sanitized against a strict #rrggbb whitelist before use).
+    const palette = normalizePalette(req.body?.palette)
+    const frontUrl = front ? await toDataUrl(front) : await renderCardSvg({ pfp, username: handle, name: displayName, palette })
     const backUrl = back ? await toDataUrl(back) : null
 
     // Pin image first so its gateway URL can be embedded as og:image in the HTML.

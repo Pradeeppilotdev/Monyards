@@ -56,7 +56,8 @@ Networks (checked Aug 2026):
 Uses the exact React Bits `<Lanyard />` source. Two card faces:
 
 - **Front** -- holder's PFP + name + @handle, rendered as a card image.
-- **Back** -- Monad back-card design (dark, logomark + "MONAD / LANYARD"), or a
+- **Back** -- Monad back-card design (near-black print stock, misregistered
+  logomark ring, stencil "MONAD" wordmark, handwritten lanyard strip), or a
   custom image baked per mint.
 
 The lanyard band is a purple (`#6e54ff`) woven-cord texture (`lanyard.png`)
