@@ -465,6 +465,15 @@ input:hover {
   margin: 10px 2px 0;
 }
 
+.share-hint {
+  color: var(--accent);
+  background: rgba(124, 92, 255, 0.08);
+  border: 1px solid rgba(196, 181, 253, 0.25);
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin: 8px 0 0;
+}
+
 .divider {
   display: flex;
   align-items: center;

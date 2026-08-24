@@ -81,7 +81,7 @@ app.post('/api/share', async (req, res) => {
 })
 
 app.post('/api/bake', async (req, res) => {
-  const { username, name, pfp, front, back } = req.body || {}
+  const { username, name, pfp, front, back, shareImage } = req.body || {}
 
   const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() : ''
   const displayName = name || (handle ? `@${handle}` : 'Monad Holder')
@@ -93,9 +93,13 @@ app.post('/api/bake', async (req, res) => {
     const palette = normalizePalette(req.body?.palette)
     const frontUrl = front ? await toDataUrl(front) : await renderCardSvg({ pfp, username: handle, name: displayName, palette })
     const backUrl = back ? await toDataUrl(back) : null
+    // The static image pinned for og:image + metadata.image should be a PNG —
+    // X and most wallets can't render SVG. Clients pass a rasterized card;
+    // fall back to the front face when they don't.
+    const imageUrl = shareImage ? await toDataUrl(shareImage) : frontUrl
 
     // Pin image first so its gateway URL can be embedded as og:image in the HTML.
-    const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(frontUrl)
+    const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(imageUrl)
     const imageCid = await pinFile({ content: imageBuffer, contentType: imageMime, filename: 'card' + extFor(imageMime) })
     const imageGateway = gatewayUrl(imageCid)
 

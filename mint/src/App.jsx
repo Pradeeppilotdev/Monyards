@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import Lanyard from '../../animation/src/Lanyard'
-import { renderCardSvg } from '../../shared/card-svg'
+import { renderCardSvg, CARD_W, CARD_H } from '../../shared/card-svg'
+import { previewCamera } from '../../animation/src/camera'
 import backCard from '../../animation/src/assets/back-card.svg'
 import { abi } from './abi'
 import { HAS_APPKIT, PROJECT_ID, appKitModal, monadTestnet } from './wallet'
 import { createPublicClient, createWalletClient, custom, formatEther, http } from 'viem'
 import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
 import { recordShareClip } from './record'
-import Silk from './Silk'
+import Silk from '../../animation/src/Silk'
 
 const AVATAR = (handle) => `https://unavatar.io/x/${encodeURIComponent(handle)}`
 
@@ -24,6 +25,34 @@ function ipfsToGateway(ipfsUrl) {
   if (!ipfsUrl) return null
   const cid = ipfsUrl.replace('ipfs://', '')
   return `https://ipfs.io/ipfs/${cid}`
+}
+
+const blobToDataUrl = (blob) =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = reject
+    r.readAsDataURL(blob)
+  })
+
+// Rasterize the card SVG to a PNG blob. X can't embed SVG and many wallets
+// won't render it either, so the share flow always ships a real PNG.
+async function rasterizeCard(svgDataUrl, width = 1200) {
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image()
+    im.onload = () => resolve(im)
+    im.onerror = () => reject(new Error('card render failed'))
+    im.src = svgDataUrl
+    setTimeout(() => reject(new Error('card render timeout')), 8000)
+  })
+  const c = document.createElement('canvas')
+  c.width = width
+  c.height = Math.round((width * CARD_H) / CARD_W)
+  const ctx = c.getContext('2d')
+  ctx.drawImage(img, 0, 0, c.width, c.height)
+  return await new Promise((resolve, reject) =>
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('png encode failed'))), 'image/png'),
+  )
 }
 
 // Extract a per-mint palette from the PFP: downscale to 24x24, pick the most
@@ -97,11 +126,13 @@ export default function App() {
   const [clip, setClip] = useState(null)
   const [sharing, setSharing] = useState(false)
   const [shareLink, setShareLink] = useState(null)
+  const [shareHint, setShareHint] = useState(null)
   const [touched, setTouched] = useState(false)
   const driveRef = useRef(null)
   const providerRef = useRef(null)
   const panelRef = useRef(null)
   const recControllerRef = useRef(null)
+  const [cam] = useState(() => previewCamera())
 
   const debouncedHandle = useDebounced(handle, 600)
   const trimmed = debouncedHandle.replace(/^@/, '').trim()
@@ -202,7 +233,14 @@ export default function App() {
   async function shareOnX() {
     setSharing(true)
     setError(null)
+    setShareHint(null)
     try {
+      if (!preview) throw new Error('card still rendering — try again in a second')
+      // A PNG of the card rides along: pinned for og:image/metadata and
+      // attached to the post, so the timeline shows the actual card.
+      const pngBlob = await rasterizeCard(preview)
+      const pngDataUrl = await blobToDataUrl(pngBlob)
+
       const res = await fetch('/api/bake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -211,16 +249,54 @@ export default function App() {
           name: name || undefined,
           pfp: pfpUrl || undefined,
           palette: pfPalette || undefined,
+          shareImage: pngDataUrl,
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'bake failed')
       const gateway = data.animationGateway || ipfsToGateway(data.animationUrl)
       const handleTag = trimmed ? `@${trimmed}` : name || 'my card'
-      const text = encodeURIComponent(`Made my Monad Lanyard for ${handleTag} — drag it live 👉\n${gateway}`)
-      const intent = `https://twitter.com/intent/tweet?text=${text}`
+      const text = `Made my Monad Lanyard for ${handleTag} — drag it live 👉\n${gateway}`
+
+      // Mobile / supporting browsers: hand the image to the native share
+      // sheet — the X compose opens with the card art already attached.
+      try {
+        const file = new File([pngBlob], `lanyard-${trimmed || 'card'}.png`, { type: 'image/png' })
+        if (navigator.canShare?.({ files: [file] })) {
+          await navigator.share({ files: [file], text })
+          return
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') return // user closed the share sheet
+      }
+
+      // Desktop fallback: put the card image AND the caption (with the live
+      // IPFS link) on the clipboard, then open an empty composer — one paste
+      // lands the art, the text and the link together. If the multi-flavor
+      // copy isn't supported, prefill the caption via the intent instead.
+      let copied = false
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'image/png': pngBlob,
+            'text/plain': new Blob([text], { type: 'text/plain' }),
+          }),
+        ])
+        copied = true
+      } catch {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+          copied = true
+        } catch {}
+      }
+      const intent = `https://twitter.com/intent/tweet${copied ? '' : `?text=${encodeURIComponent(text)}`}`
       const w = window.open(intent, '_blank')
       if (!w) setShareLink(intent) // popup blocked — surface a clickable link instead
+      setShareHint(
+        copied
+          ? 'Card + caption + link copied — paste once (Ctrl/Cmd+V) in the composer and post.'
+          : 'Caption prefilled — paste the copied card image (Ctrl/Cmd+V) to attach it.',
+      )
     } catch (e) {
       setError('Share failed: ' + e.message)
     } finally {
@@ -235,6 +311,9 @@ export default function App() {
     if (!account) return setError('Connect your wallet first.')
     setBusy(true)
     try {
+      // Rasterize the card for the pinned static image — most wallets and
+      // marketplaces can't render SVG.
+      const pngDataUrl = preview ? await blobToDataUrl(await rasterizeCard(preview)) : undefined
       const res = await fetch('/api/bake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -243,6 +322,7 @@ export default function App() {
           name: name || undefined,
           pfp: pfpUrl || undefined,
           palette: pfPalette || undefined,
+          shareImage: pngDataUrl,
         }),
       })
       const data = await res.json()
@@ -338,7 +418,8 @@ export default function App() {
           <XIcon />
           <span>{sharing ? 'Baking…' : 'Share on X'}</span>
         </button>
-        <p className="micro">Posts your live card — X shows the card image right in the tweet.</p>
+        <p className="micro">Your card image + live link go out together — the timeline sees the art.</p>
+        {shareHint && <p className="micro share-hint">{shareHint}</p>}
 
         <button
           className={`btn record-ghost ${recording ? 'recording' : ''}`}
@@ -422,7 +503,7 @@ export default function App() {
       <div className="preview" onPointerDown={() => setTouched(true)}>
         {preview && (
           <Lanyard
-            position={[0, -1.55, 10]}
+            position={cam}
             gravity={[0, -40, 0]}
             fov={26}
             frontImage={preview}

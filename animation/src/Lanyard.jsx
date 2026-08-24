@@ -145,11 +145,22 @@ function Band({
     // Keep the original baked atlas for the card edges and any untouched face.
     ctx.drawImage(baseImg, 0, 0, W, H);
 
-    const drawFitted = (img, rect) => {
-      const rx = rect.x * W;
-      const ry = rect.y * H;
-      const rw = rect.w * W;
-      const rh = rect.h * H;
+    // `half` keeps each face's overscan from crossing the atlas seam (front =
+    // [0, .5], back = [.5, 1]).
+    const drawFitted = (img, rect, half) => {
+      // Bleed ~6% past the nominal rect so the rounded card corners never
+      // sample the atlas's white padding at the edges.
+      const overscan = 0.06
+      const bx = rect.w * (overscan / 2)
+      const by = rect.h * (overscan / 2)
+      const minX = Math.max(half[0], rect.x - bx)
+      const maxX = Math.min(half[0] + 0.5, rect.x + rect.w + bx)
+      const minY = Math.max(0, rect.y - by)
+      const maxY = Math.min(1, rect.y + rect.h + by)
+      const rx = minX * W;
+      const ry = minY * H;
+      const rw = (maxX - minX) * W;
+      const rh = (maxY - minY) * H;
       const pick = imageFit === 'contain' ? Math.min : Math.max;
       const scale = pick(rw / img.width, rh / img.height);
       const dw = img.width * scale;
@@ -164,8 +175,8 @@ function Band({
       ctx.restore();
     };
 
-    if (frontImage && frontTex.image) drawFitted(frontTex.image, FRONT_UV_RECT);
-    if (backImage && backTex.image) drawFitted(backTex.image, BACK_UV_RECT);
+    if (frontImage && frontTex.image) drawFitted(frontTex.image, FRONT_UV_RECT, [0]);
+    if (backImage && backTex.image) drawFitted(backTex.image, BACK_UV_RECT, [0.5]);
 
     const composite = new THREE.CanvasTexture(canvas);
     composite.colorSpace = THREE.SRGBColorSpace;
