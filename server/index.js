@@ -126,13 +126,17 @@ app.post('/api/share', shareLimiter, async (req, res) => {
 function warmGateway(cid) {
   if (process.env.PINATA_GATEWAY) return // dedicated gateway — warming ipfs.io is moot
   ;(async () => {
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
       try {
-        const r = await fetch(`https://ipfs.io/ipfs/${cid}`, { signal: AbortSignal.timeout(45_000) })
-        if (r.ok) return
+        const r = await fetch(`https://ipfs.io/ipfs/${cid}`, { signal: AbortSignal.timeout(60_000) })
+        if (r.ok) {
+          console.log(`[warm] ${cid.slice(0, 10)}… cached on ipfs.io after ${i + 1} try(ies)`)
+          return
+        }
       } catch {}
-      await new Promise((r) => setTimeout(r, 3000))
+      await new Promise((r) => setTimeout(r, 3000 + i * 4000)) // widening backoff
     }
+    console.log(`[warm] ${cid.slice(0, 10)}… did NOT converge — first viewer may hit a cold 504`)
   })()
 }
 
@@ -206,8 +210,14 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       name: title,
       description,
       image: selfImage || `${METADATA_IMAGE_GATEWAY}/ipfs/${imageCid}`,
-      animation_url: `ipfs://${htmlCid}`,
-      external_url: selfPage || htmlGateway,
+      // First-party /s/:id when PUBLIC_URL is set — the only fully reliable
+      // https host for the 6.6MB page. Otherwise ipfs:// (the ecosystem
+      // standard; gateway.pinata.cloud is NOT an option here — it blocks
+      // HTML on free plans).
+      animation_url: selfPage || `ipfs://${htmlCid}`,
+      // gatewayUrl(htmlCid), computed fresh — htmlGateway is captured before
+      // the two-phase og:url re-pin and would point at the stale first pin.
+      external_url: selfPage || gatewayUrl(htmlCid),
       background_color: '0A0612',
       attributes: [
         { trait_type: 'handle', value: handle || 'unknown' },
