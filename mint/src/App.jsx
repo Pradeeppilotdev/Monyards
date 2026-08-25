@@ -7,7 +7,7 @@ import { abi } from './abi'
 import { HAS_APPKIT, PROJECT_ID, appKitModal, monadTestnet } from './wallet'
 import { createPublicClient, createWalletClient, custom, formatEther, http } from 'viem'
 import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
-import { recordShareClip } from './record'
+import { recordShareClip, captureLanyardImage } from './record'
 import Silk from '../../animation/src/Silk'
 
 const AVATAR = (handle) => `https://unavatar.io/x/${encodeURIComponent(handle)}`
@@ -24,7 +24,8 @@ function useDebounced(value, delay) {
 function ipfsToGateway(ipfsUrl) {
   if (!ipfsUrl) return null
   const cid = ipfsUrl.replace('ipfs://', '')
-  return `https://ipfs.io/ipfs/${cid}`
+  // gateway.pinata.cloud: CORS-enabled + no cold-cache 504s (ipfs.io has both)
+  return `https://gateway.pinata.cloud/ipfs/${cid}`
 }
 
 const blobToDataUrl = (blob) =>
@@ -51,7 +52,9 @@ async function rasterizeCard(svgDataUrl, width = 1200) {
   const ctx = c.getContext('2d')
   ctx.drawImage(img, 0, 0, c.width, c.height)
   return await new Promise((resolve, reject) =>
-    c.toBlob((b) => (b ? resolve(b) : reject(new Error('png encode failed'))), 'image/png'),
+    // JPEG keeps gateway-cached images small enough that public ipfs
+    // gateways can actually serve them (3.3MB PNGs 504 on their fetchers).
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), 'image/jpeg', 0.85),
   )
 }
 
@@ -125,7 +128,7 @@ export default function App() {
   const [recording, setRecording] = useState(false)
   const [clip, setClip] = useState(null)
   const [sharing, setSharing] = useState(false)
-  const [shareLink, setShareLink] = useState(null)
+  const [xIntent, setXIntent] = useState(null)
   const [shareHint, setShareHint] = useState(null)
   const [touched, setTouched] = useState(false)
   const driveRef = useRef(null)
@@ -234,11 +237,17 @@ export default function App() {
     setSharing(true)
     setError(null)
     setShareHint(null)
+    setXIntent(null)
     try {
       if (!preview) throw new Error('card still rendering — try again in a second')
-      // A PNG of the card rides along: pinned for og:image/metadata and
-      // attached to the post, so the timeline shows the actual card.
-      const pngBlob = await rasterizeCard(preview)
+
+      // The share image is the WHOLE lanyard — card, rope and silk — not the
+      // flat card. It also becomes the pinned og:image.
+      let pngBlob
+      try {
+        pngBlob = await captureLanyardImage({ canvas: document.querySelector('.preview canvas') })
+      } catch {}
+      if (!pngBlob) pngBlob = await rasterizeCard(preview)
       const pngDataUrl = await blobToDataUrl(pngBlob)
 
       const res = await fetch('/api/bake', {
@@ -254,14 +263,17 @@ export default function App() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'bake failed')
-      const gateway = data.animationGateway || ipfsToGateway(data.animationUrl)
+      // Prefer the server's own share URL (PUBLIC_URL) — X unfurls it and it
+      // doesn't depend on IPFS gateways being reachable.
+      const gateway = data.shareUrl || data.animationGateway || ipfsToGateway(data.animationUrl)
       const handleTag = trimmed ? `@${trimmed}` : name || 'my card'
-      const text = `Made my Monad Lanyard for ${handleTag} — drag it live 👉\n${gateway}`
+      const text = `${handleTag} printed a Monad Lanyard 🟣\nDrag it, swing it, mint yours 👇\n${gateway}`
+      const fileName = `lanyard-${trimmed || 'card'}.png`
 
-      // Mobile / supporting browsers: hand the image to the native share
-      // sheet — the X compose opens with the card art already attached.
+      // Mobile / supporting browsers: one tap — the native sheet opens with
+      // the lanyard image and caption attached; pick X and post.
       try {
-        const file = new File([pngBlob], `lanyard-${trimmed || 'card'}.png`, { type: 'image/png' })
+        const file = new File([pngBlob], fileName, { type: 'image/png' })
         if (navigator.canShare?.({ files: [file] })) {
           await navigator.share({ files: [file], text })
           return
@@ -270,10 +282,10 @@ export default function App() {
         if (e.name === 'AbortError') return // user closed the share sheet
       }
 
-      // Desktop fallback: put the card image AND the caption (with the live
-      // IPFS link) on the clipboard, then open an empty composer — one paste
-      // lands the art, the text and the link together. If the multi-flavor
-      // copy isn't supported, prefill the caption via the intent instead.
+      // Desktop: X has no one-click image API, so stage everything — lanyard
+      // pic + caption + link land on the clipboard, composer opens, one paste
+      // and it's ready to post. If the clipboard refuses, the image is
+      // downloaded instead so attaching it stays one click away.
       let copied = false
       try {
         await navigator.clipboard.write([
@@ -289,13 +301,23 @@ export default function App() {
           copied = true
         } catch {}
       }
+      if (!copied) {
+        const url = URL.createObjectURL(pngBlob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      }
+      // No window.open here — browsers block popups after async work (Brave
+      // especially). A real anchor the user clicks is a direct gesture, so
+      // the composer opens every single time.
       const intent = `https://twitter.com/intent/tweet${copied ? '' : `?text=${encodeURIComponent(text)}`}`
-      const w = window.open(intent, '_blank')
-      if (!w) setShareLink(intent) // popup blocked — surface a clickable link instead
+      setXIntent(intent)
       setShareHint(
         copied
-          ? 'Card + caption + link copied — paste once (Ctrl/Cmd+V) in the composer and post.'
-          : 'Caption prefilled — paste the copied card image (Ctrl/Cmd+V) to attach it.',
+          ? 'Lanyard pic + caption + link are on your clipboard — open the composer, paste (Ctrl/Cmd+V) and post.'
+          : 'Caption will be prefilled + the lanyard image was downloaded — attach it, then post.',
       )
     } catch (e) {
       setError('Share failed: ' + e.message)
@@ -418,7 +440,7 @@ export default function App() {
           <XIcon />
           <span>{sharing ? 'Baking…' : 'Share on X'}</span>
         </button>
-        <p className="micro">Your card image + live link go out together — the timeline sees the art.</p>
+        <p className="micro">One click — your lanyard pic + live link, staged for the post.</p>
         {shareHint && <p className="micro share-hint">{shareHint}</p>}
 
         <button
@@ -441,15 +463,21 @@ export default function App() {
           </div>
         )}
 
-        {shareLink && (
-          <a className="save-link" href={shareLink} target="_blank" rel="noreferrer">
-            Popup blocked? Post here →
+        {xIntent && (
+          <a className="btn x-open" href={xIntent} target="_blank" rel="noreferrer">
+            Open X composer →
           </a>
         )}
 
         <div className="divider">
-          <span>want it forever?</span>
+          <span>make it permanent</span>
         </div>
+
+        <p className="micro mint-pitch">
+          Sharing is free. <b>Minting</b> puts your lanyard on-chain forever — your card, your
+          handle, in your wallet and on marketplaces, still drag-it-live straight from the token
+          page.
+        </p>
 
         <div className="mint-box">
           {!config?.contractAddress && (

@@ -18,6 +18,11 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable {
     uint256 public maxSupply;
     bool public mintEnabled;
 
+    /// @notice Collection-level metadata URI (pinned JSON). Marketplaces read
+    ///         this for the collection name/description/banner — without it
+    ///         collection pages render blank.
+    string public contractURI;
+
     event Minted(address indexed to, uint256 indexed tokenId, string tokenURI);
 
     constructor(
@@ -56,6 +61,18 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable {
 
     function setMintEnabled(bool enabled) external onlyOwner {
         mintEnabled = enabled;
+    }
+
+    /// @notice Set the collection-level metadata URI.
+    function setContractURI(string calldata uri) external onlyOwner {
+        contractURI = uri;
+    }
+
+    /// @notice Repair/replace a token's metadata URI (e.g. a mint whose pin
+    ///         failed before real IPFS pinning was configured).
+    function setTokenURI(uint256 tokenId, string calldata uri) external onlyOwner {
+        require(_ownerOf(tokenId) != address(0), "token does not exist");
+        _setTokenURI(tokenId, uri);
     }
 
     function withdraw() external onlyOwner {

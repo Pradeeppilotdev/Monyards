@@ -474,6 +474,30 @@ input:hover {
   margin: 8px 0 0;
 }
 
+.mint-pitch {
+  margin: -4px 2px 14px;
+  line-height: 1.55;
+}
+
+.mint-pitch b {
+  color: var(--ink);
+}
+
+.btn.x-open {
+  width: 100%;
+  margin-top: 10px;
+  background: #000;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  text-decoration: none;
+  animation: clipIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.btn.x-open:hover {
+  background: #16181d;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
 .divider {
   display: flex;
   align-items: center;

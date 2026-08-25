@@ -13,6 +13,11 @@ contract DeployLanyardNFT is Script {
         vm.startBroadcast(deployerKey);
         nft = new LanyardNFT(mintPrice, maxSupply);
         nft.setMintEnabled(true);
+        // Collection-level metadata (name/description/banner) — marketplaces
+        // read contractURI() for the collection page. Pin a JSON like:
+        // { "name": "Monad Lanyard", "description": "...", "image": "ipfs://..." }
+        string memory contractUri = vm.envOr("CONTRACT_URI", string(""));
+        if (bytes(contractUri).length > 0) nft.setContractURI(contractUri);
         vm.stopBroadcast();
 
         console.log("LanyardNFT deployed at", address(nft));

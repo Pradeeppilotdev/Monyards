@@ -9,7 +9,7 @@ happens off-chain before the mint.
 ```
 LanyardNFT (ERC-721)
   └─ tokenURI → IPFS metadata.json
-                  ├─ image:           static card render (marketplace thumbnail)
+                  ├─ image:           static lanyard render (marketplace thumbnail)
                   └─ animation_url:   per-mint HTML (interactive Lanyard)
 ```
 
@@ -19,9 +19,9 @@ LanyardNFT (ERC-721)
 |--------------|--------------------------------------------------------------|
 | `contract/`  | Foundry project: `LanyardNFT.sol`, deploy script, tests      |
 | `animation/` | Vite app building ONE self-contained HTML + `bake.mjs`       |
-| `server/`    | Express API: per-mint bake + IPFS pinning (`/api/bake`)      |
-| `mint/`      | Mint DApp: username input, live preview, wallet mint         |
-| `shared/`    | Card SVG renderer shared by bake CLI, server and frontend    |
+| `server/`    | Express API: bake + IPFS pinning + local share store (`/api/bake`) |
+| `mint/`      | Mint DApp: username input, live preview, record/share, wallet mint |
+| `shared/`    | Card SVG renderer + embedded Caveat font shared by bake CLI, server and frontend |
 
 ## 1. Contract (`contract/`)
 
@@ -51,22 +51,40 @@ Networks (checked Aug 2026):
 | Testnet | 10143    | https://testnet-rpc.monad.xyz  | https://testnet.monadscan.com | https://faucet.monad.xyz |
 | Mainnet | 10150    | https://rpc.monad.xyz          | https://monadscan.com    | n/a (real MON)     |
 
-## 2. Interactive page (`animation/`)
+## 2. Card design (`shared/card-svg.js`)
 
-Uses the exact React Bits `<Lanyard />` source. Two card faces:
+Monad Blitz event-badge energy, rendered as a self-contained SVG (600×906):
 
-- **Front** -- holder's PFP + name + @handle, rendered as a card image.
-- **Back** -- Monad back-card design (near-black print stock, misregistered
-  logomark ring, stencil "MONAD" wordmark, handwritten lanyard strip), or a
-  custom image baked per mint.
+- Near-black print-stock background whose gradient is **blended per-mint**:
+  the PFP's dominant color is mixed 55% into Monad purple (`#836EF9`) so every
+  card stays on-brand while carrying its owner's color DNA.
+- Giant stencil-cut **LYRD** wordmark (mask slashes, heavy system font).
+- The PFP is shown in its **original colors** inside a rounded tile with a
+  misregistered accent ink ring + registration marks — the portrait provides
+  the life, the brand owns the card.
+- White paper name strip, slightly rotated, with the name written in an
+  **embedded Caveat** woff2 (`shared/name-font.js`, SIL OFL) so the
+  marker-handwritten look renders identically in every SVG rasterizer.
+- Footer: deterministic serial `NO. XXXX`, decorative barcode, `#10143` chip.
 
-The lanyard band is a purple (`#6e54ff`) woven-cord texture (`lanyard.png`)
-with a single white Monad logomark printed at its center, exactly like the
-ReactBits band stamped its diamond. The texture tiles 4x along the cord
-(`repeat={[-4,1]}` in `Lanyard.jsx`), so the mark appears at four evenly-spaced
-points along the rope and bends/sags with the ribbon like a printed lanyard.
-The card renders larger and with a thinner band via the `lanyardWidth` and
-group scale in `main.jsx`.
+The back face (`animation/src/assets/back-card.svg`) matches: logomark hero
+with misregistered ring, stencil "MONAD", handwritten strip, same footer rail.
+
+## 3. Interactive page (`animation/`)
+
+React Bits `<Lanyard />` physics scene. Card faces are composited into the
+GLB's texture atlas (front = left half, back = right half) with a ~6% overscan
+so the rounded corners never sample the atlas's white padding.
+
+Framing lives in `animation/src/camera.js`:
+
+- `previewCamera()` — the mint frontend (card ≈ 53% of frame height).
+- `stageCamera()` — the baked share page: card ≈ 65% of frame height on
+  desktop, pulled back on phones so it stays fully grabbable/swingable.
+
+The baked page also renders the **Silk shader background** (`Silk.jsx` lives in
+`animation/src/`, shared with the frontend) plus ambient purple glows, so a
+shared link looks like the product, not a tech demo.
 
 Everything (three.js, Rapier, `card.glb`, textures) is inlined into a single
 `dist/index.html` via `vite-plugin-singlefile`, so the file can be pinned to
@@ -93,15 +111,18 @@ npm run bake -- --front ./card-front.png --back ./card-back.png --out out/0.html
 npm run bake -- --card-json ./card.json --out out/0.html   # { "front": "...", "back": "..." }
 ```
 
+Always `npm run build` after touching `animation/src` — bakes read the built
+`dist/index.html` template.
+
 Open the baked file directly in a browser -- the card should swing under
 physics and be draggable. Also open it **inside a sandboxed iframe**, since
 that is the environment wallets and OpenSea render `animation_url` in.
 
-### Mint flow (built)
+## 4. Mint flow (`mint/` + `server/`)
 
-The mint frontend (`mint/`) talks to the bake server (`server/`) and then sends
-the mint transaction from the user's wallet. The server never holds keys — it
-only does off-chain baking + pinning.
+The mint frontend talks to the bake server and then sends the mint transaction
+from the user's wallet. The server never holds keys — it only does off-chain
+baking, pinning and share storage.
 
 ```bash
 # 1. Build the animation page once (produces the dist/index.html template)
@@ -119,33 +140,63 @@ Flow for one visitor:
 1. The lanyard is live the moment the page opens — no wallet, no input. A
    default card hangs on the rope and can be dragged/swung immediately.
    Controls sit on the left; the interactive card fills the right.
-2. The user types an X handle; the page fetches the PFP via unavatar.io and
-   re-renders the live preview with the same card SVG that will be baked.
-3. **Record clip** (no wallet needed): captures the WebGL preview via
+2. The user types an X handle; the page fetches the PFP via unavatar.io,
+   extracts a palette from it (blended with Monad purple) and re-renders the
+   live preview with the same card SVG that will be baked.
+3. **Record a loop** (no wallet needed): captures the WebGL preview via
    `canvas.captureStream` + `MediaRecorder` while driving a scripted sideways
-   pull (`driveRef.pull()` in `Lanyard.jsx`), so the card visibly swings.
-4. **Share on X**: uploads the recorded WebM to `POST /api/share`, which pins
-   it to IPFS and returns a gateway URL, then opens an X web-intent draft with
-   that link pre-filled. (X only embeds players for whitelisted hosts — the
-   IPFS link posts as a clickable card. A dedicated share page with
-   `twitter:player` tags would give true inline playback later.)
-5. Minting is optional: wallet connect runs through **Reown AppKit**
+   pull (`driveRef.pull()` in `Lanyard.jsx`). Frames are composited over the
+   silk backdrop (no black background), the record button doubles as a
+   stop/cancel, and finished clips can be discarded with an ✕.
+4. **Share on X**: captures the **whole lanyard** (card + rope + live silk) as
+   a PNG, sends it to `POST /api/bake` as `shareImage`, then:
+   - **Mobile**: one tap — the native share sheet opens with image + caption
+     + link attached; pick X and post.
+   - **Desktop**: image + caption + link are staged on the clipboard and an
+     **"Open X composer →"** button appears (a real user-gesture anchor, so
+     popup blockers can never eat it). One paste, then post. If the clipboard
+     refuses, the PNG is auto-downloaded so attaching it stays one click.
+   The tweet text: `@handle printed a Monad Lanyard 🟣 / Drag it, swing it,
+   mint yours 👇 / <link>`.
+5. **Minting** (optional): wallet connect runs through **Reown AppKit**
    (WalletConnect) when `VITE_REOWN_PROJECT_ID` is set in `mint/.env`
    (get a free project id at cloud.reown.com); without it the app falls back
    to plain injected wallets. Connect → POST `/api/bake`
-   `{ username, name, pfp }` → server bakes + pins HTML/`image`/metadata →
-   frontend broadcasts `mint(tokenURI)` from the connected wallet.
+   `{ username, name, pfp, palette, shareImage }` → server bakes + pins
+   HTML/`image`/metadata → frontend broadcasts `mint(tokenURI)`.
+
+## 5. Share store (`server/db.js`)
+
+Every bake is stored locally (zero-dep `node:sqlite` + files under
+`server/data/`): the share image, the full baked page, both CIDs, handle and
+name. Served first-party:
+
+| Route            | What it serves                                    |
+|------------------|---------------------------------------------------|
+| `GET /i/:id.png` | Stored share image (immutable cache)              |
+| `GET /s/:id`     | Stored interactive page — no IPFS gateway needed  |
+| `GET /api/wall`  | Recent shares — ready for a gallery wall          |
+
+Set `PUBLIC_URL=https://your-domain` in `server/.env` and the bake response's
+`shareUrl` / `imageUrl` (and the HTML's `og:image`) point at your domain
+instead of IPFS gateways — **X unfurls first-party URLs reliably**, so the
+timeline can show the lanyard even when nobody attaches an image.
 
 Keep the `image` field a good static render — most wallets never execute JS and
 only show `image`, so a blank thumbnail makes the NFT look broken even when the
-`animation_url` is fine.
+`animation_url` is fine. The mint flow always sends a PNG (`shareImage`) for
+exactly this reason.
 
-### Production checklist
+## 6. Production checklist
 
 - Set `PINATA_JWT` in `server/.env` to turn on real IPFS pinning (without it the
   server returns non-resolvable fake CIDs).
+- Set `PUBLIC_URL` once the bake server has a public domain — first-party
+  share links + reliable og:image unfurls.
 - Set `CONTRACT_ADDRESS` (and `CHAIN_ID` / `RPC_URL` / `EXPLORER_URL`) after
   deploying the contract.
+- `npm run build` in `animation/` before any bake session — bakes read the
+  built template.
 - Move `card.glb` to IPFS-by-CID to cut the baked HTML from ~6.5 MB to a few
   hundred KB (see constraints below).
 - Test the baked HTML inside a sandboxed iframe — that's how wallets and
@@ -153,9 +204,11 @@ only show `image`, so a blank thumbnail makes the NFT look broken even when the
 
 ## Known constraints
 
-- The syndication endpoint is undocumented and flaky (empty 200s, occasional IP
-  blocks). Design for it to fail: the mint path must work with just a typed
-  name and a PFP.
+- The unavatar.io PFP endpoint is best-effort (empty 200s, occasional blocks).
+  Design for it to fail: the mint path must work with just a typed name.
+- X offers no API to attach images to a web-composer post without OAuth, so
+  the desktop share always ends with one manual paste. Mobile is one tap via
+  the native share sheet.
 - The baked HTML is ~6.5 MB because the GLB card is inlined. For production,
   host `card.glb` and the large textures on IPFS and reference them by CID from
   the HTML instead of inlining — the page drops to a few hundred KB and IPFS

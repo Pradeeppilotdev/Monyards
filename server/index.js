@@ -2,9 +2,13 @@
 //
 // Endpoints:
 //   GET  /api/config   Chain + contract config for the frontend (env-driven).
-//   POST /api/bake     { username?, name?, pfp?, front?, back? } → bakes the
-//                      per-mint HTML, pins it + the card image + metadata to
-//                      IPFS, returns tokenURI/animationUrl/image.
+//   POST /api/bake     { username?, name?, pfp?, front?, back?, shareImage? }
+//                      → bakes the per-mint HTML, pins it + the card image +
+//                      metadata to IPFS, stores a local copy (db.js), returns
+//                      tokenURI/animationUrl/image + share URLs.
+//   GET  /i/:id.ext    Stored share image (served from this server).
+//   GET  /s/:id        Stored interactive share page (served locally).
+//   GET  /api/wall     Recent shares — ready for a gallery wall.
 //
 // The mint transaction itself is sent by the user's wallet (frontend) — this
 // server never holds keys and only does off-chain baking + pinning.
@@ -12,11 +16,18 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import rateLimit from 'express-rate-limit'
 import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
 import { pinFile, pinJson, pinningEnabled } from './ipfs.js'
+import { saveShare, getShare, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR } from './db.js'
+import path from 'node:path'
 
 const PORT = Number(process.env.PORT || 8787)
+// Public base URL of THIS server (e.g. https://lanyard.foo.dev). When set,
+// og:image + the share link point here instead of IPFS gateways — X unfurls
+// first-party URLs far more reliably.
+const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '')
 
 const CONFIG = {
   contractAddress: process.env.CONTRACT_ADDRESS || null,
@@ -27,14 +38,42 @@ const CONFIG = {
   symbol: 'MLYD',
 }
 
+// Two gateways, because no free one does everything:
+//  - HTML: only ipfs.io serves it — Pinata's shared gateway blocks HTML on
+//    free plans (ERR_ID:00023). Big pages warm slowly there; the production
+//    fix is PUBLIC_URL first-party hosting (/s/:id).
+//  - images/metadata JSON: gateway.pinata.cloud — CORS-enabled, serves
+//    reliably, and explorers fetch these client-side.
 function gatewayUrl(cid) {
   const base = (process.env.PINATA_GATEWAY || 'https://ipfs.io').replace(/\/$/, '')
   return `${base}/ipfs/${cid}`
 }
 
+const METADATA_IMAGE_GATEWAY = (process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud').replace(/\/$/, '')
+
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '25mb' }))
+
+// /api/bake renders + pins ~6.6MB to IPFS and writes to disk per call — it is
+// the one endpoint that costs real money/bytes, so it gets the tightest limit.
+const bakeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 12,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many bakes from this address — try again in a few minutes.' },
+})
+const shareLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many uploads from this address — try again in a few minutes.' },
+})
+// Cheap per-handle cooldown so a rotating-IP script can't hammer one identity.
+const handleCooldown = new Map()
+const HANDLE_COOLDOWN_MS = 20_000
 
 app.get('/api/config', (_req, res) => {
   res.json({ ...CONFIG, pinningEnabled })
@@ -61,7 +100,7 @@ function extFor(mime) {
 
 // POST /api/share — pins a recorded share-clip (webm data URL) to IPFS and
 // returns a public gateway URL that gets embedded in the X intent draft.
-app.post('/api/share', async (req, res) => {
+app.post('/api/share', shareLimiter, async (req, res) => {
   const { dataUrl, handle } = req.body || {}
   if (!dataUrl) return res.status(400).json({ error: 'provide a clip dataUrl' })
   try {
@@ -80,11 +119,36 @@ app.post('/api/share', async (req, res) => {
   }
 })
 
-app.post('/api/bake', async (req, res) => {
+// Warm public-gateway caches right after pinning. Explorers like MonadVision
+// fetch token data client-side via ipfs.io specifically — a cold CID there
+// means 504s, which surface in browsers as CORS failures. Small files warm in
+// a few tries; fire-and-forget so the bake response isn't delayed.
+function warmGateway(cid) {
+  if (process.env.PINATA_GATEWAY) return // dedicated gateway — warming ipfs.io is moot
+  ;(async () => {
+    for (let i = 0; i < 6; i++) {
+      try {
+        const r = await fetch(`https://ipfs.io/ipfs/${cid}`, { signal: AbortSignal.timeout(45_000) })
+        if (r.ok) return
+      } catch {}
+      await new Promise((r) => setTimeout(r, 3000))
+    }
+  })()
+}
+
+app.post('/api/bake', bakeLimiter, async (req, res) => {
   const { username, name, pfp, front, back, shareImage } = req.body || {}
 
   const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() : ''
   const displayName = name || (handle ? `@${handle}` : 'Monad Holder')
+
+  // Per-handle cooldown — same identity hammering bake from rotating IPs.
+  const now = Date.now()
+  const last = handleCooldown.get(handle.toLowerCase()) || 0
+  if (now - last < HANDLE_COOLDOWN_MS) {
+    return res.status(429).json({ error: 'Same handle was baked seconds ago — give it a moment.' })
+  }
+  handleCooldown.set(handle.toLowerCase(), now)
 
   try {
     // Normalize the two card faces to data URLs (front auto-generated from
@@ -98,10 +162,19 @@ app.post('/api/bake', async (req, res) => {
     // fall back to the front face when they don't.
     const imageUrl = shareImage ? await toDataUrl(shareImage) : frontUrl
 
+    // Local share id — image + page are stored on this server under this id.
+    const shareId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    const selfImage = PUBLIC_URL ? `${PUBLIC_URL}/i/${shareId}.png` : null
+    const selfPage = PUBLIC_URL ? `${PUBLIC_URL}/s/${shareId}` : null
+    const selfMeta = PUBLIC_URL ? `${PUBLIC_URL}/meta/${shareId}` : null
+
     // Pin image first so its gateway URL can be embedded as og:image in the HTML.
     const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(imageUrl)
     const imageCid = await pinFile({ content: imageBuffer, contentType: imageMime, filename: 'card' + extFor(imageMime) })
     const imageGateway = gatewayUrl(imageCid)
+    // og:image prefers this server's own domain — X fetches first-party
+    // images reliably, IPFS gateways often not at all.
+    const ogImage = selfImage || imageGateway
 
     const title = `Monad Lanyard — ${displayName}`
     const description = handle
@@ -112,7 +185,7 @@ app.post('/api/bake', async (req, res) => {
     let baked = await bakeHtml({
       front: frontUrl,
       back: backUrl,
-      meta: { title, description, image: imageGateway },
+      meta: { title, description, image: ogImage },
     })
     // Patch og:url once we know the HTML CID — two-phase: placeholder then replace.
     // First pin to get CID, then re-bake with final URL if we want self-referential og:url.
@@ -122,27 +195,70 @@ app.post('/api/bake', async (req, res) => {
     const bakedWithUrl = await bakeHtml({
       front: frontUrl,
       back: backUrl,
-      meta: { title, description, image: imageGateway, url: htmlGateway },
+      meta: { title, description, image: ogImage, url: htmlGateway },
     })
     if (bakedWithUrl !== baked) {
       htmlCid = await pinFile({ content: bakedWithUrl, contentType: 'text/html', filename: 'index.html' })
       baked = bakedWithUrl
     }
 
-    const metaCid = await pinJson({
+    const metaJson = {
       name: title,
       description,
-      image: `ipfs://${imageCid}`,
+      image: selfImage || `${METADATA_IMAGE_GATEWAY}/ipfs/${imageCid}`,
       animation_url: `ipfs://${htmlCid}`,
-      attributes: [{ trait_type: 'handle', value: handle || 'unknown' }],
+      external_url: selfPage || htmlGateway,
+      background_color: '0A0612',
+      attributes: [
+        { trait_type: 'handle', value: handle || 'unknown' },
+        { trait_type: 'display_name', value: displayName },
+        { trait_type: 'chain', value: `#${CONFIG.chainId}` },
+      ],
+    }
+    const metaCid = await pinJson(metaJson)
+
+    // Local copy — image always; the 6.6MB page only when /s/:id is actually
+    // linked (PUBLIC_URL set). Without this gate, every dev bake writes
+    // 6.6MB to disk and a scripted abuser fills the volume.
+    saveShare({
+      id: shareId,
+      handle,
+      displayName,
+      imageCid,
+      htmlCid,
+      metaCid,
+      imageBuffer,
+      imageExt: extFor(imageMime),
+      htmlBuffer: selfPage ? Buffer.from(baked) : null,
+      metaJson,
     })
+    pruneShares(300)
+    warmGateway(metaCid)
+    warmGateway(imageCid)
+    warmGateway(htmlCid) // best effort — 6.6MB may not warm, hence PUBLIC_URL
+
+    // tokenURI as an always-fetchable HTTPS URL: explorers like MonadVision
+    // fetch metadata client-side from the browser, where ipfs.io 504s arrive
+    // as CORS failures and Brave shields block the domain entirely. Pinata's
+    // gateway serves CORS + the content from origin. First-party /meta/:id
+    // wins when PUBLIC_URL is set.
+    const tokenURIValue = selfMeta
+      ? `${PUBLIC_URL}/meta/${shareId}`
+      : pinningEnabled
+        ? `${METADATA_IMAGE_GATEWAY}/ipfs/${metaCid}`
+        : `ipfs://${metaCid}`
 
     res.json({
-      tokenURI: `ipfs://${metaCid}`,
+      tokenURI: tokenURIValue,
       animationUrl: `ipfs://${htmlCid}`,
       animationGateway: gatewayUrl(htmlCid),
       image: `ipfs://${imageCid}`,
       imageGateway,
+      shareId,
+      // First-party URLs when PUBLIC_URL is set — best unfurl + zero IPFS
+      // dependency for the share flow.
+      shareUrl: selfPage || gatewayUrl(htmlCid),
+      imageUrl: selfImage || imageGateway,
       htmlBytes: Buffer.byteLength(baked),
       handle,
       displayName,
@@ -151,6 +267,39 @@ app.post('/api/bake', async (req, res) => {
     console.error('bake failed:', err)
     res.status(500).json({ error: err.message || 'bake failed' })
   }
+})
+
+// Stored token metadata — first-party, CORS-open, so explorers that fetch
+// tokenURI client-side (MonadVision) always succeed.
+app.get('/meta/:id', (req, res) => {
+  const row = getShare(req.params.id)
+  if (!row?.meta_file) return res.status(404).json({ error: 'share not found' })
+  res.set('Access-Control-Allow-Origin', '*')
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.sendFile(path.join(META_DIR, row.meta_file))
+})
+
+// Stored share image — served first-party so og:image unfurls reliably.
+app.get('/i/:id.:ext(png|jpg|jpeg|webp|svg)', (req, res) => {
+  const row = getShare(req.params.id)
+  if (!row?.image_file) return res.status(404).json({ error: 'share not found' })
+  res.set('Cache-Control', 'public, max-age=31536000, immutable')
+  res.sendFile(path.join(IMAGE_DIR, row.image_file))
+})
+
+// Stored interactive page — the full baked lanyard served from this server,
+// no IPFS gateway needed.
+app.get('/s/:id', (req, res) => {
+  const row = getShare(req.params.id)
+  if (!row?.page_file) return res.status(404).json({ error: 'share not found' })
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.sendFile(path.join(PAGE_DIR, row.page_file))
+})
+
+// Recent shares — ready for a gallery wall on the frontend.
+app.get('/api/wall', (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50)
+  res.json({ shares: recentShares(limit).map((s) => ({ ...s, imageUrl: `/i/${s.id}.png`, pageUrl: `/s/${s.id}` })) })
 })
 
 app.use((err, _req, res, _next) => {
