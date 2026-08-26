@@ -36,6 +36,17 @@ const blobToDataUrl = (blob) =>
     r.readAsDataURL(blob)
   })
 
+// Users don't read stack traces. Cancellations say nothing; everything else
+// gets one soft line. Real details stay in the console.
+function friendlyError(e) {
+  const msg = String(e?.shortMessage || e?.message || e || '')
+  console.error(e)
+  if (/reject|denied|4001|user cancelled/i.test(msg)) return null // they know
+  if (/Too many bakes/i.test(msg)) return 'Too many at once — give it a few minutes.'
+  if (/insufficient/i.test(msg)) return 'Not enough test MON in that wallet for the mint.'
+  return "Didn't go through — give it another go."
+}
+
 // Rasterize the card SVG to a PNG blob. X can't embed SVG and many wallets
 // won't render it either, so the share flow always ships a real PNG.
 async function rasterizeCard(svgDataUrl, width = 1200) {
@@ -137,6 +148,13 @@ export default function App() {
   const recControllerRef = useRef(null)
   const [cam] = useState(() => previewCamera())
 
+  // Success popups are a moment, not furniture — fade after a few seconds.
+  useEffect(() => {
+    if (!result) return
+    const t = setTimeout(() => setResult(null), 8000)
+    return () => clearTimeout(t)
+  }, [result])
+
   const debouncedHandle = useDebounced(handle, 600)
   const trimmed = debouncedHandle.replace(/^@/, '').trim()
   const pfpUrl = trimmed ? AVATAR(trimmed) : null
@@ -219,7 +237,7 @@ export default function App() {
       const blob = await recordShareClip({ canvas, driveRef, signal: ctl.signal })
       setClip({ blob, url: URL.createObjectURL(blob), mime: blob.type })
     } catch (e) {
-      if (e.name !== 'AbortError') setError('Clip recording failed: ' + e.message)
+      if (e.name !== 'AbortError') setError(friendlyError(e))
     } finally {
       recControllerRef.current = null
       setRecording(false)
@@ -267,13 +285,15 @@ export default function App() {
       // doesn't depend on IPFS gateways being reachable.
       const gateway = data.shareUrl || data.animationGateway || ipfsToGateway(data.animationUrl)
       const handleTag = trimmed ? `@${trimmed}` : name || 'my card'
-      const text = `${handleTag} printed a Monad Lanyard 🟣\nDrag it, swing it, mint yours 👇\n${gateway}`
-      const fileName = `lanyard-${trimmed || 'card'}.png`
+      const text = `Here's mine. Your turn if you're a real Monad OG 🟣\nGrab yours 👇\n${gateway}`
 
       // Mobile / supporting browsers: one tap — the native sheet opens with
       // the lanyard image and caption attached; pick X and post.
       try {
-        const file = new File([pngBlob], fileName, { type: 'image/png' })
+        // captureLanyardImage now returns JPEG (poster framing) — name and
+        // type follow whatever the capture actually produced.
+        const ext = pngBlob.type === 'image/png' ? 'png' : 'jpg'
+        const file = new File([pngBlob], `lanyard-${trimmed || 'card'}.${ext}`, { type: pngBlob.type })
         if (navigator.canShare?.({ files: [file] })) {
           await navigator.share({ files: [file], text })
           return
@@ -282,45 +302,27 @@ export default function App() {
         if (e.name === 'AbortError') return // user closed the share sheet
       }
 
-      // Desktop: X has no one-click image API, so stage everything — lanyard
-      // pic + caption + link land on the clipboard, composer opens, one paste
-      // and it's ready to post. If the clipboard refuses, the image is
-      // downloaded instead so attaching it stays one click away.
+      // Desktop: the share link is first-party now — X unfurls it with the
+      // card pic as og:image, so no attach or paste is required at all. The
+      // image still lands on the clipboard for anyone who prefers it embedded.
       let copied = false
       try {
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            'image/png': pngBlob,
-            'text/plain': new Blob([text], { type: 'text/plain' }),
-          }),
-        ])
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
         copied = true
-      } catch {
-        try {
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
-          copied = true
-        } catch {}
-      }
-      if (!copied) {
-        const url = URL.createObjectURL(pngBlob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = fileName
-        a.click()
-        setTimeout(() => URL.revokeObjectURL(url), 10_000)
-      }
-      // No window.open here — browsers block popups after async work (Brave
+      } catch {}
+      // No window.open — browsers block popups after async work (Brave
       // especially). A real anchor the user clicks is a direct gesture, so
       // the composer opens every single time.
-      const intent = `https://twitter.com/intent/tweet${copied ? '' : `?text=${encodeURIComponent(text)}`}`
+      const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`
       setXIntent(intent)
       setShareHint(
         copied
-          ? 'Lanyard pic + caption + link are on your clipboard — open the composer, paste (Ctrl/Cmd+V) and post.'
-          : 'Caption will be prefilled + the lanyard image was downloaded — attach it, then post.',
+          ? 'Caption + link are prefilled and your card pic unfurls with the link — just hit Post. (Pic is also on your clipboard if you want it embedded.)'
+          : 'Caption + link are prefilled — the card pic unfurls with the link. Just hit Post.',
       )
     } catch (e) {
-      setError('Share failed: ' + e.message)
+      setError(friendlyError(e))
+      console.error(e)
     } finally {
       setSharing(false)
     }
@@ -360,9 +362,18 @@ export default function App() {
         value: mintPrice ?? 0n,
         account,
       })
+      // Flag the share as minted so the server's prune never unpins a live
+      // token's content.
+      if (data.shareId) {
+        fetch('/api/minted', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shareId: data.shareId }),
+        }).catch(() => {})
+      }
       setResult({ hash, tokenURI: data.tokenURI, animationUrl: data.animationUrl })
     } catch (e) {
-      setError(e.shortMessage || e.message)
+      setError(friendlyError(e))
     } finally {
       setBusy(false)
     }
@@ -389,12 +400,6 @@ export default function App() {
       <div className="silk-bg" aria-hidden>
         <Silk color="#7325B5" speed={5} scale={1} noiseIntensity={1.5} rotation={0} />
       </div>
-      <header className="topbar">
-        <div className="brand top-brand">
-          <span className="brand-mark" />
-          <span>MONAD LYRD</span>
-        </div>
-      </header>
       <div className="page">
       {HAS_APPKIT && <AppKitBridge setAccount={setAccount} providerRef={providerRef} />}
       <div
@@ -407,10 +412,14 @@ export default function App() {
           panelRef.current.style.setProperty('--my', `${e.clientY - r.top}px`)
         }}
       >
+        <div className="brand top-brand">
+          <span className="brand-mark" />
+          <span>MONAD LYRD</span>
+        </div>
         <h1>
-          Your card is <span className="grad shimmer">live</span>
+          Are you a real <span className="grad shimmer">Monad OG?</span>
         </h1>
-        <p className="sub">Type an X handle to make it yours. Drag it, swing it, share it — no wallet needed.</p>
+        <p className="sub">Type your handle. Grab your card. Show it off.</p>
 
         <label className="field">
           <span>Handle</span>
@@ -451,18 +460,6 @@ export default function App() {
           {recording ? '■ Stop recording' : '○ Record a loop of your card'}
         </button>
 
-        {clip && (
-          <div className="clip-area">
-            <button className="clip-close" onClick={clearClip} title="Discard clip" aria-label="Discard clip">
-              ✕
-            </button>
-            <video className="clip-video" src={clip.url} controls loop muted playsInline />
-            <a className="save-link" href={clip.url} download={`lanyard-${trimmed || 'card'}.webm`}>
-              or download the video ↓
-            </a>
-          </div>
-        )}
-
         {xIntent && (
           <a className="btn x-open" href={xIntent} target="_blank" rel="noreferrer">
             Open X composer →
@@ -474,9 +471,7 @@ export default function App() {
         </div>
 
         <p className="micro mint-pitch">
-          Sharing is free. <b>Minting</b> puts your lanyard on-chain forever — your card, your
-          handle, in your wallet and on marketplaces, still drag-it-live straight from the token
-          page.
+          Free to share. <b>Mint to make it forever.</b>
         </p>
 
         <div className="mint-box">
@@ -488,17 +483,13 @@ export default function App() {
             {HAS_APPKIT ? (
               <button className="btn secondary wallet-btn" onClick={connect}>
                 {account ? (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                    <span className="dot" />
-                    {account.slice(0, 6)}…{account.slice(-4)}
-                  </span>
+                  <span>{account.slice(0, 6)}…{account.slice(-4)}</span>
                 ) : (
                   'Connect wallet'
                 )}
               </button>
             ) : account ? (
               <div className="wallet-row">
-                <span className="dot" />
                 {account.slice(0, 6)}…{account.slice(-4)}
               </div>
             ) : (
@@ -540,6 +531,17 @@ export default function App() {
             lanyardWidth={0.78}
             driveRef={driveRef}
           />
+        )}
+        {clip && (
+          <div className="clip-area">
+            <button className="clip-close" onClick={clearClip} title="Discard clip" aria-label="Discard clip">
+              ✕
+            </button>
+            <video className="clip-video" src={clip.url} controls loop muted playsInline />
+            <a className="save-link" href={clip.url} download={`lanyard-${trimmed || 'card'}.webm`}>
+              or download the video ↓
+            </a>
+          </div>
         )}
         <div className={`drag-hint ${touched ? 'drag-hint--hidden' : ''}`}>Grab the card — it&apos;s real physics</div>
         {recording && <div className="rec-badge">REC</div>}

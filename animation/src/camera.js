@@ -11,7 +11,8 @@ export function previewCamera() {
   return [0, -1.43, 9.2]
 }
 
-// The baked IPFS stage: card fills ~65% of the frame height on desktop.
+// The baked IPFS stage: card fills ~57% of the frame height on desktop —
+// big and present without swallowing the screen.
 export function stageCamera(
   w = typeof window !== 'undefined' ? window.innerWidth : 1280,
   h = typeof window !== 'undefined' ? window.innerHeight : 800,
@@ -19,5 +20,5 @@ export function stageCamera(
   // Phone: pull back so the card is ~2/3 of the screen WIDTH — at the old
   // distance it overflowed the edges and left no room to grab or swing it.
   if (w < 768) return [0, -1.4, 10.5]
-  return [0, -1.24, 7.5]
+  return [0, -1.3, 8.5]
 }

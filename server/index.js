@@ -19,9 +19,13 @@ import cors from 'cors'
 import rateLimit from 'express-rate-limit'
 import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
-import { pinFile, pinJson, pinningEnabled } from './ipfs.js'
-import { saveShare, getShare, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR } from './db.js'
+import { pinFile, pinJson, pinningEnabled, unpin } from './ipfs.js'
+import { saveShare, getShare, markMinted, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR } from './db.js'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 const PORT = Number(process.env.PORT || 8787)
 // Public base URL of THIS server (e.g. https://lanyard.foo.dev). When set,
@@ -185,26 +189,15 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       ? `Interactive Monad lanyard card for @${handle}. Drag the card on-chain.`
       : 'Interactive Monad lanyard card. Drag the card on-chain.'
 
-    // Bake HTML with OG/Twitter meta so the IPFS gateway link unfurls with the card image on X.
-    let baked = await bakeHtml({
+    // Single HTML pin. The old two-phase og:url re-pin cost a 4th pin per
+    // mint against the free-tier cap; og:image is what unfurls actually use,
+    // and og:url falls back to the page URL scrapers were given anyway.
+    const baked = await bakeHtml({
       front: frontUrl,
       back: backUrl,
       meta: { title, description, image: ogImage },
     })
-    // Patch og:url once we know the HTML CID — two-phase: placeholder then replace.
-    // First pin to get CID, then re-bake with final URL if we want self-referential og:url.
-    let htmlCid = await pinFile({ content: baked, contentType: 'text/html', filename: 'index.html' })
-    const htmlGateway = gatewayUrl(htmlCid)
-    // Re-bake with final og:url for perfect unfurl (re-pin if changed)
-    const bakedWithUrl = await bakeHtml({
-      front: frontUrl,
-      back: backUrl,
-      meta: { title, description, image: ogImage, url: htmlGateway },
-    })
-    if (bakedWithUrl !== baked) {
-      htmlCid = await pinFile({ content: bakedWithUrl, contentType: 'text/html', filename: 'index.html' })
-      baked = bakedWithUrl
-    }
+    const htmlCid = await pinFile({ content: baked, contentType: 'text/html', filename: 'index.html' })
 
     const metaJson = {
       name: title,
@@ -215,8 +208,8 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       // standard; gateway.pinata.cloud is NOT an option here — it blocks
       // HTML on free plans).
       animation_url: selfPage || `ipfs://${htmlCid}`,
-      // gatewayUrl(htmlCid), computed fresh — htmlGateway is captured before
-      // the two-phase og:url re-pin and would point at the stale first pin.
+      // Computed fresh from the final htmlCid (gatewayUrl = ipfs.io — the only
+      // free gateway that serves HTML).
       external_url: selfPage || gatewayUrl(htmlCid),
       background_color: '0A0612',
       attributes: [
@@ -243,6 +236,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       metaJson,
     })
     pruneShares(300)
+      .forEach((cid) => unpin(cid).catch(() => {})) // free Pinata slots (fire-and-forget)
     warmGateway(metaCid)
     warmGateway(imageCid)
     warmGateway(htmlCid) // best effort — 6.6MB may not warm, hence PUBLIC_URL
@@ -279,6 +273,14 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
   }
 })
 
+// Mark a share as minted — prune never touches a live token's pins/files.
+app.post('/api/minted', bakeLimiter, (req, res) => {
+  const { shareId } = req.body || {}
+  if (!shareId || !getShare(shareId)) return res.status(404).json({ error: 'share not found' })
+  markMinted(shareId)
+  res.json({ ok: true })
+})
+
 // Stored token metadata — first-party, CORS-open, so explorers that fetch
 // tokenURI client-side (MonadVision) always succeed.
 app.get('/meta/:id', (req, res) => {
@@ -311,6 +313,29 @@ app.get('/api/wall', (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50)
   res.json({ shares: recentShares(limit).map((s) => ({ ...s, imageUrl: `/i/${s.id}.png`, pageUrl: `/s/${s.id}` })) })
 })
+
+// Serve the built mint DApp so one domain hosts everything — the frontend,
+// /api, /i, /s, /meta. Requires `npm run build` in mint/. API/storage routes
+// above are matched first; anything else falls through to the DApp shell.
+const MINT_DIST = path.join(ROOT, '..', 'mint', 'dist')
+if (existsSync(MINT_DIST)) {
+  // Assets are content-hashed (immutable), but index.html must always be
+  // fresh — otherwise returning visitors see a stale shell after deploys.
+  app.use(
+    express.static(MINT_DIST, {
+      maxAge: '1h',
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache')
+      },
+    }),
+  )
+  app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache')
+    res.sendFile(path.join(MINT_DIST, 'index.html'))
+  })
+} else {
+  app.get('/', (_req, res) => res.json({ service: 'lanyard bake server', api: '/api/config' }))
+}
 
 app.use((err, _req, res, _next) => {
   console.error(err)

@@ -45,6 +45,20 @@ export async function pinJson(json) {
   return data.IpfsHash
 }
 
+// Removes a pin — frees a slot from the free-tier cap. Only call for content
+// no live token points at.
+export async function unpin(cid) {
+  if (!JWT) return
+  const res = await fetch(`${PINATA_API}/pinning/unpin/${cid}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${JWT}` },
+  })
+  // 404 = already gone, fine. Anything else non-ok: log and move on.
+  if (!res.ok && res.status !== 404) {
+    console.error(`unpin ${cid.slice(0, 10)}… failed: ${res.status}`)
+  }
+}
+
 // Content-addressed fake CID: same input always maps to the same CID, which is
 // good enough to exercise the full mint flow before real pinning is configured.
 function dryRunCid(content) {

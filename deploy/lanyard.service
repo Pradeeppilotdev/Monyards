@@ -1,0 +1,22 @@
+[Unit]
+Description=Monad Lanyard bake server
+After=network.target
+
+[Service]
+Type=simple
+# Adjust User/WorkingDirectory to wherever the repo lives on the box.
+User=pradeep
+WorkingDirectory=/home/pradeep/Downloads/IDnad/server
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+# Env is read from .env in WorkingDirectory (dotenv).
+
+# Hardening (optional but cheap)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
