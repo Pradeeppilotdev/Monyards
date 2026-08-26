@@ -142,7 +142,6 @@ export default function App() {
   const [xIntent, setXIntent] = useState(null)
   const [shareHint, setShareHint] = useState(null)
   const [touched, setTouched] = useState(false)
-  const driveRef = useRef(null)
   const providerRef = useRef(null)
   const panelRef = useRef(null)
   const recControllerRef = useRef(null)
@@ -234,7 +233,7 @@ export default function App() {
     try {
       const canvas = document.querySelector('.preview canvas')
       if (!canvas) throw new Error('Preview canvas not found')
-      const blob = await recordShareClip({ canvas, driveRef, signal: ctl.signal })
+      const blob = await recordShareClip({ canvas, signal: ctl.signal })
       setClip({ blob, url: URL.createObjectURL(blob), mime: blob.type })
     } catch (e) {
       if (e.name !== 'AbortError') setError(friendlyError(e))
@@ -388,7 +387,6 @@ export default function App() {
     window.__app = {
       recordClip,
       shareOnX,
-      driveRef,
       fakeResult: () => {
         setAccount('0x68a691c461c54ce767c6d539022fa344397b9f31')
         setResult({ hash: '0x' + '0'.repeat(64), tokenURI: 'ipfs://x', animationUrl: 'ipfs://y' })
@@ -529,7 +527,6 @@ export default function App() {
             backImage={backCard}
             imageFit="cover"
             lanyardWidth={0.78}
-            driveRef={driveRef}
           />
         )}
         {clip && (
@@ -543,7 +540,9 @@ export default function App() {
             </a>
           </div>
         )}
-        <div className={`drag-hint ${touched ? 'drag-hint--hidden' : ''}`}>Grab the card — it&apos;s real physics</div>
+        <div className={`drag-hint ${touched && !recording ? 'drag-hint--hidden' : ''}`}>
+          {recording ? 'Drag the card — make it swing' : "Grab the card — it's real physics"}
+        </div>
         {recording && <div className="rec-badge">REC</div>}
       </div>
     </div>

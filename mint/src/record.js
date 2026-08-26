@@ -102,7 +102,7 @@ export async function captureLanyardImage({ canvas }) {
   )
 }
 
-export async function recordShareClip({ canvas, driveRef, durationMs = 4600, pullDelayMs = 500, signal }) {
+export async function recordShareClip({ canvas, durationMs = 7000, signal }) {
   // The WebGL canvas is transparent, so recording it directly collapses every
   // background pixel to black — and at screen resolution the card looms over
   // an empty frame. Instead each frame is composited into the fixed 4:5
@@ -128,9 +128,9 @@ export async function recordShareClip({ canvas, driveRef, durationMs = 4600, pul
   })
   rec.start(100)
 
+  // No scripted pull — the user swings the card themselves while recording.
+  // Natural motion, and the card never slides half-out of frame.
   try {
-    await sleep(pullDelayMs, signal)
-    driveRef?.current?.pull()
     await sleep(durationMs, signal)
   } catch (e) {
     if (rec.state !== 'inactive') rec.stop()

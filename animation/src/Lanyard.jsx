@@ -35,7 +35,6 @@ export default function Lanyard({
   imageFit = 'cover',
   lanyardImage = null,
   lanyardWidth = 0.5,
-  driveRef = null
 }) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
 
@@ -62,7 +61,6 @@ export default function Lanyard({
             imageFit={imageFit}
             lanyardImage={lanyardImage}
             lanyardWidth={lanyardWidth}
-            driveRef={driveRef}
           />
         </Physics>
         <Environment blur={0.75}>
@@ -108,7 +106,6 @@ function Band({
   imageFit = 'cover',
   lanyardImage = null,
   lanyardWidth = 0.5,
-  driveRef = null
 }) {
   const band = useRef(),
     fixed = useRef(),
@@ -191,18 +188,6 @@ function Band({
   );
   const [dragged, drag] = useState(false);
   const [hovered, hover] = useState(false);
-  // Scripted pull for share-clip recording: drives the card kinematically
-  // sideways, then releases it so the rope swings under physics.
-  const [pull, setPull] = useState(null);
-
-  useEffect(() => {
-    if (driveRef) {
-      driveRef.current = {
-        pull: () => setPull({ start: performance.now(), dur: 800, dir: 1 }),
-      };
-      return () => void (driveRef.current = null);
-    }
-  }, [driveRef]);
 
   useRopeJoint(fixed, j1, [[0, 0, 0], [0, 0, 0], 0.8]);
   useRopeJoint(j1, j2, [[0, 0, 0], [0, 0, 0], 0.8]);
@@ -220,18 +205,6 @@ function Band({
   }, [hovered, dragged]);
 
   useFrame((state, delta) => {
-    if (pull) {
-      const t = Math.min(1, (performance.now() - pull.start) / pull.dur);
-      const eased = 1 - Math.pow(1 - t, 3);
-      const from = card.current.translation();
-      [card, j1, j2, j3, fixed].forEach(ref => ref.current?.wakeUp());
-      card.current.setNextKinematicTranslation({
-        x: from.x + (2.4 * pull.dir - from.x) * eased,
-        y: from.y,
-        z: from.z,
-      });
-      if (t >= 1) setPull(null);
-    }
     if (dragged) {
       vec.set(state.pointer.x, state.pointer.y, 0.5).unproject(state.camera);
       dir.copy(vec).sub(state.camera.position).normalize();
@@ -279,7 +252,7 @@ function Band({
         <RigidBody position={[1.5, 0, 0]} ref={j3} {...segmentProps}>
           <BallCollider args={[0.1]} />
         </RigidBody>
-        <RigidBody position={[2, 0, 0]} ref={card} {...segmentProps} type={dragged || pull ? 'kinematicPosition' : 'dynamic'}>
+        <RigidBody position={[2, 0, 0]} ref={card} {...segmentProps} type={dragged ? 'kinematicPosition' : 'dynamic'}>
           <CuboidCollider args={[0.8, 1.125, 0.01]} />
           <group
             scale={2.6}
