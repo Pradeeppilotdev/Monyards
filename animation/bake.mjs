@@ -88,11 +88,15 @@ export async function bakeHtml({ front, back, meta }) {
     const tags = [
       meta.title ? `<meta property="og:title" content="${escAttr(meta.title)}" />` : '',
       meta.description ? `<meta property="og:description" content="${escAttr(meta.description)}" />` : '',
-      meta.image ? `<meta property="og:image" content="${escAttr(meta.image)}" />` : '',
-      meta.image ? `<meta name="twitter:card" content="summary_large_image" />` : '',
-      meta.image ? `<meta name="twitter:image" content="${escAttr(meta.image)}" />` : '',
       meta.url ? `<meta property="og:url" content="${escAttr(meta.url)}" />` : '',
       meta.url ? `<meta property="og:type" content="website" />` : '',
+      meta.image ? `<meta property="og:image" content="${escAttr(meta.image)}" />` : '',
+      meta.image ? `<meta property="og:image:width" content="1080" />` : '',
+      meta.image ? `<meta property="og:image:height" content="1350" />` : '',
+      meta.image ? `<meta name="twitter:card" content="summary_large_image" />` : '',
+      meta.image ? `<meta name="twitter:title" content="${escAttr(meta.title || '')}" />` : '',
+      meta.image ? `<meta name="twitter:description" content="${escAttr(meta.description || '')}" />` : '',
+      meta.image ? `<meta name="twitter:image" content="${escAttr(meta.image)}" />` : '',
     ]
       .filter(Boolean)
       .join('\n    ')

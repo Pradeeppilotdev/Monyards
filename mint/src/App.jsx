@@ -146,6 +146,28 @@ export default function App() {
   const panelRef = useRef(null)
   const recControllerRef = useRef(null)
   const [cam] = useState(() => previewCamera())
+  // Scroll cue: show once per device until they actually scroll — localStorage
+  // remembers across visits. (try/catch: private-mode storage can throw.)
+  const [showCue, setShowCue] = useState(() => {
+    try {
+      return localStorage.getItem('lyrd-cue-seen') !== '1'
+    } catch {
+      return true
+    }
+  })
+
+  useEffect(() => {
+    if (!showCue) return
+    const hide = () => {
+      setShowCue(false)
+      try {
+        localStorage.setItem('lyrd-cue-seen', '1')
+      } catch {}
+      window.removeEventListener('scroll', hide)
+    }
+    window.addEventListener('scroll', hide, { passive: true })
+    return () => window.removeEventListener('scroll', hide)
+  }, [showCue])
 
   // Success popups are a moment, not furniture — fade after a few seconds.
   useEffect(() => {
@@ -226,6 +248,11 @@ export default function App() {
       recControllerRef.current?.abort()
       return
     }
+    // On mobile, scroll to the top so the user sees the card and knows to
+    // drag it while recording.
+    if (window.innerWidth <= 920) {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
     setRecording(true)
     setError(null)
     const ctl = new AbortController()
@@ -284,7 +311,7 @@ export default function App() {
       // doesn't depend on IPFS gateways being reachable.
       const gateway = data.shareUrl || data.animationGateway || ipfsToGateway(data.animationUrl)
       const handleTag = trimmed ? `@${trimmed}` : name || 'my card'
-      const text = `Here's mine. Your turn if you're a real Monad OG 🟣\nGrab yours 👇\n${gateway}`
+      const text = `Here's mine. Your turn if you're a real Monad OG 🟣\nGrab yours 👇\n${gateway}\n\nMake your own → cards.pradeeppilot.xyz`
 
       // Mobile / supporting browsers: one tap — the native sheet opens with
       // the lanyard image and caption attached; pick X and post.
@@ -398,6 +425,15 @@ export default function App() {
       <div className="silk-bg" aria-hidden>
         <Silk color="#7325B5" speed={5} scale={1} noiseIntensity={1.5} rotation={0} />
       </div>
+      {/* Floating brand — wide screens only (≥1420px), where the top-left
+          corner is clear of the panel. Narrower viewports render the in-panel
+          pill instead (CSS toggles). */}
+      <header className="topbar">
+        <div className="brand float-brand">
+          <span className="brand-mark" />
+          <span>MONAD LYRD</span>
+        </div>
+      </header>
       <div className="page">
       {HAS_APPKIT && <AppKitBridge setAccount={setAccount} providerRef={providerRef} />}
       <div
@@ -415,7 +451,12 @@ export default function App() {
           <span>MONAD LYRD</span>
         </div>
         <h1>
-          Are you a real <span className="grad shimmer">Monad OG?</span>
+          <span className="og-long">
+            Are you a real <span className="grad shimmer">Monad OG?</span>
+          </span>
+          <span className="og-short">
+            Real Monad OG? <span className="grad shimmer">Prove it.</span>
+          </span>
         </h1>
         <p className="sub">Type your handle. Grab your card. Show it off.</p>
 
@@ -543,6 +584,11 @@ export default function App() {
         <div className={`drag-hint ${touched && !recording ? 'drag-hint--hidden' : ''}`}>
           {recording ? 'Drag the card — make it swing' : "Grab the card — it's real physics"}
         </div>
+        {showCue && (
+          <div className="scroll-cue" aria-hidden>
+            scroll — make it yours <span className="scroll-cue-arrow">↓</span>
+          </div>
+        )}
         {recording && <div className="rec-badge">REC</div>}
       </div>
     </div>

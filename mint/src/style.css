@@ -74,7 +74,7 @@ body::after {
   display: grid;
   grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
   gap: 28px;
-  height: 100vh;
+  min-height: 100vh;
   padding: 28px clamp(20px, 4vw, 56px);
   align-items: center;
   max-width: 1280px;
@@ -153,14 +153,48 @@ body::after {
   opacity: 1;
 }
 
+/* Brand pill: floats at the viewport's top-left on wide screens (the look),
+   tucks inside the panel when the viewport narrows (no overlap). */
+.topbar {
+  position: fixed;
+  top: 18px;
+  left: 24px;
+  z-index: 3;
+  display: none;
+  pointer-events: none;
+}
+
+.topbar .brand {
+  margin-bottom: 0;
+  background: rgba(15, 10, 32, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 10px 18px;
+  border-radius: 999px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+
 .top-brand {
   margin-bottom: 18px;
+  align-self: flex-start;
+  width: fit-content;
   background: rgba(15, 10, 32, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.09);
   padding: 8px 14px;
   border-radius: 999px;
-  align-self: flex-start;
-  width: fit-content;
+}
+
+/* Wide screens: floating pill in the clear corner, in-panel pill hidden.
+   .brand.top-brand double-class beats the base .brand rule regardless of
+   source order (the minifier reorders nothing, but .brand sits later). */
+@media (min-width: 1420px) {
+  .topbar {
+    display: flex;
+  }
+  .brand.top-brand {
+    display: none;
+  }
 }
 
 .brand {
@@ -348,7 +382,7 @@ input:hover {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 46px;
+  height: 50px;
   border: none;
   border-radius: 12px;
   padding: 0 18px;
@@ -548,6 +582,7 @@ input:hover {
 
 .wallet-btn {
   justify-content: center;
+  min-height: 46px;
 }
 
 .mint-actions {
@@ -581,9 +616,31 @@ input:hover {
   margin-bottom: 0;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 920px) {
   .mint-actions {
     flex-direction: column;
+    gap: 14px;
+  }
+  .mint-actions .btn,
+  .mint-actions .wallet-row,
+  .mint-actions .reown-wrap {
+    width: 100% !important;
+    height: 56px !important;
+    font-size: 17px !important;
+    border-radius: 14px !important;
+    min-height: 56px;
+  }
+  .btn-row .btn.x-btn {
+    height: 56px !important;
+    font-size: 17px !important;
+  }
+  .btn.x-btn {
+    height: 56px !important;
+    font-size: 17px !important;
+  }
+  .btn.record-ghost {
+    height: 48px !important;
+    font-size: 14px !important;
   }
 }
 
@@ -714,6 +771,66 @@ input:hover {
   width: 100%;
 }
 
+/* Mobile gets the tight headline; desktop keeps the full line. */
+.og-short {
+  display: none;
+}
+
+@media (max-width: 920px) {
+  .og-long {
+    display: none;
+  }
+  .og-short {
+    display: inline;
+  }
+  h1 {
+    font-size: 22px;
+    white-space: nowrap;
+  }
+}
+
+/* Mobile hero: cue that the form lives below the card. Scrolls away naturally. */
+.scroll-cue {
+  display: none;
+}
+
+@media (max-width: 920px) {
+  /* .preview .drag-hint out-specifies the base rule regardless of order */
+  .preview .drag-hint {
+    bottom: 58px;
+  }
+  .scroll-cue {
+    display: block;
+    position: absolute;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--accent);
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    background: rgba(20, 12, 44, 0.72);
+    border: 1px solid rgba(196, 181, 253, 0.28);
+    padding: 7px 14px;
+    border-radius: 999px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .scroll-cue-arrow {
+    display: inline-block;
+    margin-left: 4px;
+  }
+}
+
+/* Touch: the canvas owns the gesture — page scroll must never fight the
+   card drag on mobile. */
+.preview canvas {
+  touch-action: none;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
 .drag-hint {
   position: absolute;
   left: 50%;
@@ -781,6 +898,9 @@ input:hover {
     grid-template-columns: 1fr;
     padding: 24px 16px;
     gap: 20px;
+  }
+  .panel {
+    padding: 24px 20px;
   }
   .preview {
     height: 58vh;

@@ -48,12 +48,12 @@ export default function Lanyard({
     <div className="lanyard-wrapper">
       <Canvas
         camera={{ position: position, fov: fov }}
-        dpr={[1, isMobile ? 1.5 : 2]}
+        dpr={[1, 2]}
         gl={{ alpha: transparent, preserveDrawingBuffer: true }}
         onCreated={({ gl }) => gl.setClearColor(new THREE.Color(0x000000), transparent ? 0 : 1)}
       >
         <ambientLight intensity={Math.PI} />
-        <Physics gravity={gravity} timeStep={isMobile ? 1 / 30 : 1 / 60}>
+        <Physics gravity={gravity} timeStep={1 / 60}>
           <Band
             isMobile={isMobile}
             frontImage={frontImage}
@@ -229,7 +229,7 @@ function Band({
       // force a recompute — otherwise getSpacedPoints spaces against the very
       // first frame's curve and the emblems drift unevenly as the rope sags.
       curve.updateArcLengths();
-      band.current.geometry.setPoints(curve.getSpacedPoints(isMobile ? 16 : 32));
+      band.current.geometry.setPoints(curve.getSpacedPoints(32));
       ang.copy(card.current.angvel());
       rot.copy(card.current.rotation());
       card.current.setAngvel({ x: ang.x, y: ang.y - rot.y * 0.25, z: ang.z });
@@ -285,7 +285,7 @@ function Band({
         <meshLineMaterial
           color="white"
           depthTest={false}
-          resolution={isMobile ? [1000, 2000] : [1000, 1000]}
+          resolution={[1000, 1000]}
           useMap
           map={texture}
           repeat={[-4, 1]}

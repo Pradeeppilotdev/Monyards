@@ -22,10 +22,14 @@ import { bakeHtml } from '../animation/bake.mjs'
 import { pinFile, pinJson, pinningEnabled, unpin } from './ipfs.js'
 import { saveShare, getShare, markMinted, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR } from './db.js'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
+
+function esc(s) {
+  return String(s || '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
 
 const PORT = Number(process.env.PORT || 8787)
 // Public base URL of THIS server (e.g. https://lanyard.foo.dev). When set,
@@ -169,6 +173,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     // X and most wallets can't render SVG. Clients pass a rasterized card;
     // fall back to the front face when they don't.
     const imageUrl = shareImage ? await toDataUrl(shareImage) : frontUrl
+    const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(imageUrl)
 
     // Local share id — image + page are stored on this server under this id.
     const shareId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
@@ -176,28 +181,26 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     const selfPage = PUBLIC_URL ? `${PUBLIC_URL}/s/${shareId}` : null
     const selfMeta = PUBLIC_URL ? `${PUBLIC_URL}/meta/${shareId}` : null
 
-    // Pin image first so its gateway URL can be embedded as og:image in the HTML.
-    const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(imageUrl)
-    const imageCid = await pinFile({ content: imageBuffer, contentType: imageMime, filename: 'card' + extFor(imageMime) })
-    const imageGateway = gatewayUrl(imageCid)
-    // og:image prefers this server's own domain — X fetches first-party
-    // images reliably, IPFS gateways often not at all.
-    const ogImage = selfImage || imageGateway
-
     const title = `Monad Lanyard — ${displayName}`
     const description = handle
       ? `Interactive Monad lanyard card for @${handle}. Drag the card on-chain.`
       : 'Interactive Monad lanyard card. Drag the card on-chain.'
 
-    // Single HTML pin. The old two-phase og:url re-pin cost a 4th pin per
-    // mint against the free-tier cap; og:image is what unfurls actually use,
-    // and og:url falls back to the page URL scrapers were given anyway.
+    // Bake the HTML (no pin yet — pin in parallel with image below).
     const baked = await bakeHtml({
       front: frontUrl,
       back: backUrl,
-      meta: { title, description, image: ogImage },
+      meta: { title, description, image: selfImage || undefined, url: selfPage || undefined },
     })
-    const htmlCid = await pinFile({ content: baked, contentType: 'text/html', filename: 'index.html' })
+    const ogImage = selfImage || undefined // prefer first-party for og:image
+
+    // Pin image + HTML in parallel — sequential pins blew past Cloudflare's
+    // tunnel timeout (~100s) when Pinata was slow.
+    const [imageCid, htmlCid] = await Promise.all([
+      pinFile({ content: imageBuffer, contentType: imageMime, filename: 'card' + extFor(imageMime) }),
+      pinFile({ content: baked, contentType: 'text/html', filename: 'index.html' }),
+    ])
+    const imageGateway = gatewayUrl(imageCid)
 
     const metaJson = {
       name: title,
@@ -295,13 +298,82 @@ app.get('/meta/:id', (req, res) => {
 app.get('/i/:id.:ext(png|jpg|jpeg|webp|svg)', (req, res) => {
   const row = getShare(req.params.id)
   if (!row?.image_file) return res.status(404).json({ error: 'share not found' })
+  const ext = req.params.ext.toLowerCase()
+  const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', svg: 'image/svg+xml' }
+  res.set('Content-Type', types[ext] || 'application/octet-stream')
   res.set('Cache-Control', 'public, max-age=31536000, immutable')
   res.sendFile(path.join(IMAGE_DIR, row.image_file))
 })
 
-// Stored interactive page — the full baked lanyard served from this server,
-// no IPFS gateway needed.
+// Stored interactive page — serve a lightweight meta shell (<5KB) that has
+// all the og:meta tags X/Telegram need for unfurling, plus an iframe that
+// loads the full 6.6MB baked page. Crawlers see the meta tags instantly;
+// real users get the full interactive experience.
 app.get('/s/:id', (req, res) => {
+  const row = getShare(req.params.id)
+  if (!row) return res.status(404).json({ error: 'share not found' })
+
+  // If no meta JSON, serve the raw page (legacy shares).
+  if (!row.meta_file) {
+    if (!row.page_file) return res.status(404).json({ error: 'share not found' })
+    res.set('Cache-Control', 'public, max-age=3600')
+    return res.sendFile(path.join(PAGE_DIR, row.page_file))
+  }
+
+  const meta = JSON.parse(readFileSync(path.join(META_DIR, row.meta_file), 'utf8'))
+  const pageUrl = `${PUBLIC_URL || ''}/full/${req.params.id}`
+  const imageUrl = meta.image || ''
+
+  const shell = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${esc(meta.name || 'Monad Lanyard')}</title>
+  <meta property="og:title" content="${esc(meta.name || '')}"/>
+  <meta property="og:description" content="${esc(meta.description || '')}"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:url" content="${PUBLIC_URL || ''}/s/${req.params.id}"/>
+  <meta property="og:image" content="${esc(imageUrl)}"/>
+  <meta property="og:image:width" content="1080"/>
+  <meta property="og:image:height" content="1350"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:title" content="${esc(meta.name || '')}"/>
+  <meta name="twitter:description" content="${esc(meta.description || '')}"/>
+  <meta name="twitter:image" content="${esc(imageUrl)}"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟣</text></svg>"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0a0612;color:#f2eefe;font-family:system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
+    .frame{width:100%;height:100%;border:none}
+    .loader{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0612;z-index:1;transition:opacity .4s}
+    .loader.done{opacity:0;pointer-events:none}
+    .spinner{width:32px;height:32px;border:3px solid rgba(255,255,255,.12);border-top-color:#7c5cff;border-radius:50%;animation:spin .7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    p{margin-top:14px;color:#a89fc9;font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="loader" id="ldr">
+    <div class="spinner"></div>
+    <p>Loading your lanyard…</p>
+  </div>
+  <iframe class="frame" src="${esc(pageUrl)}" onload="document.getElementById('ldr').classList.add('done')" allow="autoplay"></iframe>
+  <script>
+    // If iframe fails to load (e.g. no JS), redirect directly.
+    setTimeout(function(){ if(document.getElementById('ldr')&&!document.getElementById('ldr').classList.contains('done'))window.location.href="${esc(pageUrl)}"},5000);
+  </script>
+</body>
+</html>`
+
+  res.set('Content-Type', 'text/html; charset=utf-8')
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.send(shell)
+})
+
+// Full baked page — served under /full/:id so crawlers at /s/:id get the
+// lightweight meta shell instead of the 6.6MB payload.
+app.get('/full/:id', (req, res) => {
   const row = getShare(req.params.id)
   if (!row?.page_file) return res.status(404).json({ error: 'share not found' })
   res.set('Cache-Control', 'public, max-age=3600')

@@ -16,33 +16,45 @@ export const pinningEnabled = Boolean(JWT)
 // contentType is used for the multipart filename; Pinata keys off the file.
 export async function pinFile({ content, contentType = 'application/octet-stream', filename }) {
   if (!JWT) return dryRunCid(content)
-  const body = new FormData()
-  const blob =
-    typeof content === 'string'
-      ? new Blob([content], { type: contentType })
-      : new Blob([new Uint8Array(content)], { type: contentType })
-  body.append('file', blob, filename)
-  const res = await fetch(`${PINATA_API}/pinning/pinFileToIPFS`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${JWT}` },
-    body,
-  })
-  if (!res.ok) throw new Error(`pinFileToIPFS failed: ${res.status} ${await res.text()}`)
-  const data = await res.json()
-  return data.IpfsHash
+  try {
+    const body = new FormData()
+    const blob =
+      typeof content === 'string'
+        ? new Blob([content], { type: contentType })
+        : new Blob([new Uint8Array(content)], { type: contentType })
+    body.append('file', blob, filename)
+    const res = await fetch(`${PINATA_API}/pinning/pinFileToIPFS`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${JWT}` },
+      body,
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) throw new Error(`pinFileToIPFS failed: ${res.status} ${await res.text()}`)
+    const data = await res.json()
+    return data.IpfsHash
+  } catch (err) {
+    console.error(`[pinFile] Pinata failed (${filename}): ${err.message} — falling back to local CID`)
+    return dryRunCid(content)
+  }
 }
 
 // Pins a JSON object (metadata.json) and returns its CID.
 export async function pinJson(json) {
   if (!JWT) return dryRunCid(JSON.stringify(json))
-  const res = await fetch(`${PINATA_API}/pinning/pinJSONToIPFS`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${JWT}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(json),
-  })
-  if (!res.ok) throw new Error(`pinJSONToIPFS failed: ${res.status} ${await res.text()}`)
-  const data = await res.json()
-  return data.IpfsHash
+  try {
+    const res = await fetch(`${PINATA_API}/pinning/pinJSONToIPFS`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${JWT}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(json),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) throw new Error(`pinJSONToIPFS failed: ${res.status} ${await res.text()}`)
+    const data = await res.json()
+    return data.IpfsHash
+  } catch (err) {
+    console.error(`[pinJson] Pinata failed: ${err.message} — falling back to local CID`)
+    return dryRunCid(JSON.stringify(json))
+  }
 }
 
 // Removes a pin — frees a slot from the free-tier cap. Only call for content
@@ -52,6 +64,7 @@ export async function unpin(cid) {
   const res = await fetch(`${PINATA_API}/pinning/unpin/${cid}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${JWT}` },
+    signal: AbortSignal.timeout(15_000),
   })
   // 404 = already gone, fine. Anything else non-ok: log and move on.
   if (!res.ok && res.status !== 404) {
