@@ -59,6 +59,13 @@ body::after {
   height: 100vh;
 }
 
+.lanyard-wrapper canvas {
+  touch-action: none;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
 .hint {
   position: fixed;
   bottom: 22px;
@@ -71,7 +78,7 @@ body::after {
   color: rgba(255, 255, 255, 0.45);
   pointer-events: none;
   user-select: none;
-  animation: hint-fade 6s ease forwards;
+  animation: hint-fade 15s ease forwards;
 }
 
 @keyframes hint-fade {

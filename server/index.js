@@ -367,7 +367,10 @@ app.get('/s/:id', (req, res) => {
 </html>`
 
   res.set('Content-Type', 'text/html; charset=utf-8')
-  res.set('Cache-Control', 'public, max-age=3600')
+  // no-store: Cloudflare must always hit the origin. If it caches a 502 or
+  // error while the server was down, that stale error gets served for the
+  // entire max-age window — even after the server recovers.
+  res.set('Cache-Control', 'no-store, must-revalidate')
   res.send(shell)
 })
 
@@ -376,7 +379,7 @@ app.get('/s/:id', (req, res) => {
 app.get('/full/:id', (req, res) => {
   const row = getShare(req.params.id)
   if (!row?.page_file) return res.status(404).json({ error: 'share not found' })
-  res.set('Cache-Control', 'public, max-age=3600')
+  res.set('Cache-Control', 'no-store, must-revalidate')
   res.sendFile(path.join(PAGE_DIR, row.page_file))
 })
 

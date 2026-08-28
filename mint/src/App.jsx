@@ -139,8 +139,8 @@ export default function App() {
   const [recording, setRecording] = useState(false)
   const [clip, setClip] = useState(null)
   const [sharing, setSharing] = useState(false)
-  const [xIntent, setXIntent] = useState(null)
   const [shareHint, setShareHint] = useState(null)
+  const [xIntent, setXIntent] = useState(null)
   const [touched, setTouched] = useState(false)
   const providerRef = useRef(null)
   const panelRef = useRef(null)
@@ -307,45 +307,30 @@ export default function App() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'bake failed')
-      // Prefer the server's own share URL (PUBLIC_URL) — X unfurls it and it
-      // doesn't depend on IPFS gateways being reachable.
       const gateway = data.shareUrl || data.animationGateway || ipfsToGateway(data.animationUrl)
-      const handleTag = trimmed ? `@${trimmed}` : name || 'my card'
       const text = `Here's mine. Your turn if you're a real Monad OG 🟣\nGrab yours 👇\n${gateway}\n\nMake your own → cards.pradeeppilot.xyz`
 
-      // Mobile / supporting browsers: one tap — the native sheet opens with
-      // the lanyard image and caption attached; pick X and post.
+      // Mobile: native share sheet — one tap, pick X, done.
       try {
-        // captureLanyardImage now returns JPEG (poster framing) — name and
-        // type follow whatever the capture actually produced.
         const ext = pngBlob.type === 'image/png' ? 'png' : 'jpg'
         const file = new File([pngBlob], `lanyard-${trimmed || 'card'}.${ext}`, { type: pngBlob.type })
         if (navigator.canShare?.({ files: [file] })) {
           await navigator.share({ files: [file], text })
+          setShareHint('Shared!')
           return
         }
       } catch (e) {
-        if (e.name === 'AbortError') return // user closed the share sheet
+        if (e.name === 'AbortError') return
       }
 
-      // Desktop: the share link is first-party now — X unfurls it with the
-      // card pic as og:image, so no attach or paste is required at all. The
-      // image still lands on the clipboard for anyone who prefers it embedded.
-      let copied = false
+      // Desktop: copy image to clipboard and show the X composer button.
+      // Browsers block popups after async work — no way around the extra click.
       try {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
-        copied = true
       } catch {}
-      // No window.open — browsers block popups after async work (Brave
-      // especially). A real anchor the user clicks is a direct gesture, so
-      // the composer opens every single time.
       const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`
       setXIntent(intent)
-      setShareHint(
-        copied
-          ? 'Caption + link are prefilled and your card pic unfurls with the link — just hit Post. (Pic is also on your clipboard if you want it embedded.)'
-          : 'Caption + link are prefilled — the card pic unfurls with the link. Just hit Post.',
-      )
+      setShareHint('Card pic is on your clipboard. Click below to open X and post.')
     } catch (e) {
       setError(friendlyError(e))
       console.error(e)
