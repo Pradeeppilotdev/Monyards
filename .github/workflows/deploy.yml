@@ -4,13 +4,32 @@ on:
     branches: [main]
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build animation
+        run: cd animation && npm ci && npm run build
+
+      - name: Build mint
+        run: cd mint && npm ci && npm run build
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
-          host: 136.118.193.174
-          username: chandrapradeeprcse2427
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
-          script: bash ~/deploy.sh
+          script: |
+            cd ~/IDnad
+            git fetch origin main
+            git reset --hard origin/main
+            cd server
+            npm ci --production 2>/dev/null || true
+            pm2 restart lanyard-server
+            echo "Deployed at $(date)"
