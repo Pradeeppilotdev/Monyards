@@ -244,6 +244,21 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     warmGateway(imageCid)
     warmGateway(htmlCid) // best effort — 6.6MB may not warm, hence PUBLIC_URL
 
+    // Warm first-party URLs so X/Twitter's crawler never hits a cold edge.
+    // X caches failures aggressively — if the first fetch is slow, it stays
+    // broken for hours. Hitting our own URLs populates Cloudflare's edge.
+    if (PUBLIC_URL) {
+      const warmUrls = [
+        `${PUBLIC_URL}/s/${shareId}`,
+        selfImage, // /i/:id.png — og:image
+      ].filter(Boolean)
+      for (const url of warmUrls) {
+        fetch(url, { signal: AbortSignal.timeout(15_000) })
+          .then((r) => console.log(`[warm-edge] ${url.slice(-30)}… ${r.status}`))
+          .catch(() => {})
+      }
+    }
+
     // tokenURI as an always-fetchable HTTPS URL: explorers like MonadVision
     // fetch metadata client-side from the browser, where ipfs.io 504s arrive
     // as CORS failures and Brave shields block the domain entirely. Pinata's
@@ -367,10 +382,10 @@ app.get('/s/:id', (req, res) => {
 </html>`
 
   res.set('Content-Type', 'text/html; charset=utf-8')
-  // no-store: Cloudflare must always hit the origin. If it caches a 502 or
-  // error while the server was down, that stale error gets served for the
-  // entire max-age window — even after the server recovers.
-  res.set('Cache-Control', 'no-store, must-revalidate')
+  // Cache the meta shell — it's static per share (never changes after bake).
+  // Without this, X/Twitter's crawler hits origin on every request and may
+  // time out if the server is under load.
+  res.set('Cache-Control', 'public, max-age=86400, s-maxage=604800')
   res.send(shell)
 })
 
