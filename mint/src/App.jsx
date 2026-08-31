@@ -499,7 +499,7 @@ export default function App() {
         </p>
 
         <div className="mint-box">
-          {!config?.contractAddress && (
+          {config && !config.contractAddress && (
             <div className="warn">Contract not deployed yet — preview and share work fine, minting opens soon.</div>
           )}
 
