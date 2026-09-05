@@ -28,6 +28,7 @@ db.exec(`
     image_file   TEXT,
     page_file    TEXT,
     meta_file    TEXT,
+    gif_file     TEXT,
     image_cid    TEXT,
     html_cid     TEXT,
     meta_cid     TEXT,
@@ -41,18 +42,23 @@ try {
 try {
   db.exec('ALTER TABLE shares ADD COLUMN minted INTEGER DEFAULT 0')
 } catch {}
+try {
+  db.exec('ALTER TABLE shares ADD COLUMN gif_file TEXT')
+} catch {}
 
 const insert = db.prepare(`
-  INSERT INTO shares (id, handle, display_name, image_file, page_file, meta_file, image_cid, html_cid, meta_cid)
-  VALUES (@id, @handle, @displayName, @imageFile, @pageFile, @metaFile, @imageCid, @htmlCid, @metaCid)
+  INSERT INTO shares (id, handle, display_name, image_file, page_file, meta_file, gif_file, image_cid, html_cid, meta_cid)
+  VALUES (@id, @handle, @displayName, @imageFile, @pageFile, @metaFile, @gifFile, @imageCid, @htmlCid, @metaCid)
 `)
 
-export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid, imageBuffer, imageExt, htmlBuffer, metaJson, shellBuffer }) {
+export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid, imageBuffer, imageExt, gifBuffer, htmlBuffer, metaJson, shellBuffer }) {
   const imageFile = imageBuffer ? `${id}${imageExt}` : null
+  const gifFile = gifBuffer ? `${id}.gif` : null
   const pageFile = htmlBuffer ? `${id}.html` : null
   const metaFile = metaJson ? `${id}.json` : null
   const shellFile = shellBuffer ? `${id}.html` : null
   if (imageBuffer) writeFileSync(path.join(IMAGE_DIR, imageFile), imageBuffer)
+  if (gifBuffer) writeFileSync(path.join(IMAGE_DIR, gifFile), gifBuffer)
   if (htmlBuffer) writeFileSync(path.join(PAGE_DIR, pageFile), htmlBuffer)
   if (metaJson) writeFileSync(path.join(DATA_DIR, 'meta', metaFile), JSON.stringify(metaJson))
   if (shellBuffer) writeFileSync(path.join(SHELL_DIR, shellFile), shellBuffer)
@@ -61,6 +67,7 @@ export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid,
     handle: handle || null,
     displayName: displayName || null,
     imageFile,
+    gifFile,
     pageFile,
     metaFile,
     imageCid: imageCid || null,
@@ -94,7 +101,7 @@ export function pruneShares(keep = 300) {
   const evicted = db
     .prepare(`
       SELECT id, image_cid AS imageCid, html_cid AS htmlCid, meta_cid AS metaCid,
-             image_file AS imageFile, page_file AS pageFile, meta_file AS metaFile
+             image_file AS imageFile, page_file AS pageFile, meta_file AS metaFile, gif_file AS gifFile
       FROM shares
       WHERE minted = 0 AND created_at < datetime('now', '-1 day')
       ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?`)
@@ -107,6 +114,7 @@ export function pruneShares(keep = 300) {
   }
   for (const row of evicted) {
     removeFile(IMAGE_DIR, row.imageFile)
+    removeFile(IMAGE_DIR, row.gifFile)
     removeFile(PAGE_DIR, row.pageFile)
     removeFile(META_DIR, row.metaFile)
     removeFile(SHELL_DIR, typeof row.pageFile === 'string' ? row.pageFile.replace(/\.html$/, '') + '.html' : null)

@@ -19,6 +19,7 @@ import cors from 'cors'
 import rateLimit from 'express-rate-limit'
 import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
+import { cardGif } from './gif.js'
 import { pinFile, pinJson, pinningEnabled, unpin } from './ipfs.js'
 import { saveShare, getShare, markMinted, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR, SHELL_DIR } from './db.js'
 import path from 'node:path'
@@ -37,7 +38,7 @@ function esc(s) {
 // static resource across all edge nodes.
 function buildShell(meta, id) {
   const pageUrl = `${PUBLIC_URL || ''}/full/${id}`
-  const imageUrl = meta?.image || ''
+  const imageUrl = meta?.og_image || meta?.image || ''
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -227,6 +228,14 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     const imageUrl = shareImage ? await toDataUrl(shareImage) : frontUrl
     const { buffer: imageBuffer, mime: imageMime } = dataUrlToBuffer(imageUrl)
 
+    // The card SVG (client never sends `front`, so frontUrl is the SVG
+    // renderCardSvg generated). This is what drives the animated GIF — it
+    // must match the rasterized shareImage, which it does because both come
+    // from the same renderCardSvg output.
+    const rawSvg = (!front && PUBLIC_URL && frontUrl.startsWith('data:image/svg'))
+      ? Buffer.from(frontUrl.split(',')[1], 'base64').toString('utf8')
+      : null
+
     // Local share id — image + page are stored on this server under this id.
     const shareId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
     const selfImage = PUBLIC_URL ? `${PUBLIC_URL}/i/${shareId}.png` : null
@@ -254,10 +263,31 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     ])
     const imageGateway = gatewayUrl(imageCid)
 
+    // Animated CHOG-style preview — a small GIF loop of the person's card.
+    // Generated from the same renderCardSvg output that produced the pinned
+    // PNG, so it matches pixel-for-pixel. Served first-party (never pinned),
+    // like /s/:id — keeps Pinata at 3 pins per mint.
+    let gifBuffer = null
+    if (rawSvg) {
+      try {
+        const gif = await cardGif(rawSvg, { width: 300, frames: 20, delay: 90 })
+        gifBuffer = gif.buffer
+      } catch (err) {
+        console.error('gif gen failed:', err.message)
+      }
+    }
+    const selfGif = PUBLIC_URL && gifBuffer ? `${PUBLIC_URL}/i/${shareId}.gif` : null
+
     const metaJson = {
       name: title,
       description,
-      image: selfImage || `${METADATA_IMAGE_GATEWAY}/ipfs/${imageCid}`,
+      // Animated GIF when first-party hosting is available — scanners and
+      // marketplaces auto-play whatever `image` points to (that's the CHOG
+      // trick). Falls back to the pinned PNG otherwise.
+      image: selfGif || selfImage || `${METADATA_IMAGE_GATEWAY}/ipfs/${imageCid}`,
+      // Separate field so the share shell/og:image keeps the static PNG for
+      // reliable unfurls — wallets read `image`, crawlers read og:image.
+      og_image: selfImage || `${METADATA_IMAGE_GATEWAY}/ipfs/${imageCid}`,
       // First-party /s/:id when PUBLIC_URL is set — the only fully reliable
       // https host for the 6.6MB page. Otherwise ipfs:// (the ecosystem
       // standard; gateway.pinata.cloud is NOT an option here — it blocks
@@ -287,6 +317,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       metaCid,
       imageBuffer,
       imageExt: extFor(imageMime),
+      gifBuffer,
       htmlBuffer: selfPage ? Buffer.from(baked) : null,
       metaJson,
       shellBuffer: selfPage ? Buffer.from(buildShell(metaJson, shareId)) : null,
@@ -304,6 +335,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       const warmUrls = [
         `${PUBLIC_URL}/s/${shareId}`,
         selfImage, // /i/:id.png — og:image
+        selfGif, // /i/:id.gif — animated preview
       ].filter(Boolean)
       await Promise.allSettled(
         warmUrls.map((url) =>
@@ -335,6 +367,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       // dependency for the share flow.
       shareUrl: selfPage || gatewayUrl(htmlCid),
       imageUrl: selfImage || imageGateway,
+      gifUrl: selfGif || undefined,
       htmlBytes: Buffer.byteLength(baked),
       handle,
       displayName,
@@ -364,14 +397,17 @@ app.get('/meta/:id', (req, res) => {
 })
 
 // Stored share image — served first-party so og:image unfurls reliably.
-app.get('/i/:id.:ext(png|jpg|jpeg|webp|svg)', (req, res) => {
+// The animated GIF preview is served alongside the static PNG.
+app.get('/i/:id.:ext(png|jpg|jpeg|webp|svg|gif)', (req, res) => {
   const row = getShare(req.params.id)
   if (!row?.image_file) return res.status(404).json({ error: 'share not found' })
   const ext = req.params.ext.toLowerCase()
-  const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', svg: 'image/svg+xml' }
+  const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', svg: 'image/svg+xml', gif: 'image/gif' }
+  const file = ext === 'gif' ? (row.gif_file || null) : row.image_file
+  if (!file) return res.status(404).json({ error: 'share not found' })
   res.set('Content-Type', types[ext] || 'application/octet-stream')
   res.set('Cache-Control', 'public, max-age=31536000, immutable')
-  res.sendFile(path.join(IMAGE_DIR, row.image_file))
+  res.sendFile(path.join(IMAGE_DIR, file))
 })
 
 // Stored interactive page — serve a lightweight meta shell (<5KB) that has
