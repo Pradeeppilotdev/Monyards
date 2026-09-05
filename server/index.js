@@ -133,6 +133,9 @@ const handleCooldown = new Map()
 const HANDLE_COOLDOWN_MS = 20_000
 
 app.get('/api/config', (_req, res) => {
+  // Live config must never be cached — a stale CDN copy breaks minting the
+  // moment the contract address changes.
+  res.set('Cache-Control', 'no-store')
   res.json({ ...CONFIG, pinningEnabled })
 })
 
