@@ -485,9 +485,14 @@ export default function App() {
         </button>
 
         {xIntent && (
-          <a className="btn x-open" href={xIntent} target="_blank" rel="noreferrer">
-            Open X composer →
-          </a>
+          <>
+            <a className="btn x-open" href={xIntent} target="_blank" rel="noreferrer">
+              Open X composer →
+            </a>
+            <p className="micro share-hint x-tip">
+              The preview may take a moment to appear — just hit Post, the card shows on your tweet right away.
+            </p>
+          </>
         )}
 
         <div className="divider">

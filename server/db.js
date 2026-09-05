@@ -13,9 +13,11 @@ export const DATA_DIR = path.join(ROOT, 'data')
 export const IMAGE_DIR = path.join(DATA_DIR, 'images')
 export const PAGE_DIR = path.join(DATA_DIR, 'pages')
 export const META_DIR = path.join(DATA_DIR, 'meta')
+export const SHELL_DIR = path.join(DATA_DIR, 'shells')
 mkdirSync(IMAGE_DIR, { recursive: true })
 mkdirSync(PAGE_DIR, { recursive: true })
 mkdirSync(META_DIR, { recursive: true })
+mkdirSync(SHELL_DIR, { recursive: true })
 
 const db = new DatabaseSync(path.join(DATA_DIR, 'lanyard.db'))
 db.exec(`
@@ -45,13 +47,15 @@ const insert = db.prepare(`
   VALUES (@id, @handle, @displayName, @imageFile, @pageFile, @metaFile, @imageCid, @htmlCid, @metaCid)
 `)
 
-export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid, imageBuffer, imageExt, htmlBuffer, metaJson }) {
+export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid, imageBuffer, imageExt, htmlBuffer, metaJson, shellBuffer }) {
   const imageFile = imageBuffer ? `${id}${imageExt}` : null
   const pageFile = htmlBuffer ? `${id}.html` : null
   const metaFile = metaJson ? `${id}.json` : null
+  const shellFile = shellBuffer ? `${id}.html` : null
   if (imageBuffer) writeFileSync(path.join(IMAGE_DIR, imageFile), imageBuffer)
   if (htmlBuffer) writeFileSync(path.join(PAGE_DIR, pageFile), htmlBuffer)
   if (metaJson) writeFileSync(path.join(DATA_DIR, 'meta', metaFile), JSON.stringify(metaJson))
+  if (shellBuffer) writeFileSync(path.join(SHELL_DIR, shellFile), shellBuffer)
   insert.run({
     id,
     handle: handle || null,
@@ -105,6 +109,7 @@ export function pruneShares(keep = 300) {
     removeFile(IMAGE_DIR, row.imageFile)
     removeFile(PAGE_DIR, row.pageFile)
     removeFile(META_DIR, row.metaFile)
+    removeFile(SHELL_DIR, typeof row.pageFile === 'string' ? row.pageFile.replace(/\.html$/, '') + '.html' : null)
     db.prepare('DELETE FROM shares WHERE id = ?').run(row.id)
   }
   // Dedup — identical bakes reuse CIDs (content addressing).

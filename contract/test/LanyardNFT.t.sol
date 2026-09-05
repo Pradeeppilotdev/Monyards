@@ -76,4 +76,57 @@ contract LanyardNFTTest is Test, IERC721Receiver {
         nft.setMintPrice(1 ether);
         assertEq(nft.mintPrice(), 1 ether);
     }
+
+    function test_RefundsOverpayment() public {
+        nft.setMintPrice(0.01 ether);
+        address minter = address(0xb0b);
+        vm.deal(minter, 1 ether);
+        uint256 before = minter.balance;
+        // Mintee pays 0.05, cost 0.01 -> 0.04 refunded, net cost 0.01.
+        vm.prank(minter);
+        nft.mint{value: 0.05 ether}(TOKEN_URI);
+        assertEq(minter.balance, before - 0.01 ether);
+        assertEq(nft.balanceOf(minter), 1);
+    }
+
+    function test_RefundUsesNoExtraBalance() public {
+        // Sender pays exactly price; any pre-existing contract balance stays.
+        // Foundry pre-funds this test contract, so track the delta from the
+        // contract instead of absolute balances.
+        nft.setMintPrice(0.01 ether);
+        uint256 contractBefore = address(nft).balance;
+        uint256 senderBefore = address(this).balance;
+        nft.mint{value: 0.01 ether}(TOKEN_URI);
+        // Contract keeps exactly the mint price (0.01).
+        assertEq(address(nft).balance, contractBefore + 0.01 ether);
+        // Sender only loses the 0.01 price (no extra withdrawal).
+        assertEq(address(this).balance, senderBefore - 0.01 ether);
+    }
+
+    function test_RejectsEmptyUri() public {
+        vm.expectRevert("invalid uri length");
+        nft.mint("");
+    }
+
+    function test_RejectsOversizedUri() public {
+        string memory big = new string(2049);
+        vm.expectRevert("invalid uri length");
+        nft.mint(big);
+    }
+
+    function test_TwoStepOwnershipTransfer() public {
+        address next = address(0xabcd);
+        nft.transferOwnership(next);
+        assertEq(nft.pendingOwner(), next);
+        assertEq(nft.owner(), address(this));
+
+        vm.prank(next);
+        nft.acceptOwnership();
+        assertEq(nft.owner(), next);
+
+        // Old owner can no longer mint-control.
+        vm.prank(address(this));
+        vm.expectRevert();
+        nft.setMintEnabled(false);
+    }
 }

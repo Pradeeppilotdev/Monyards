@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721URIStorage} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -12,11 +13,23 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///         mint's tokenURI points to pinned metadata whose `animation_url` is a
 ///         self-contained HTML page (the interactive Lanyard). The name, X
 ///         handle and PFP are baked into that HTML before the mint is broadcast.
-contract LanyardNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
+///
+/// Security notes:
+///   - Two-step ownership (Ownable2Step) — a mistaken transfer can always be
+///     caught and reverted by the current owner before the new one accepts.
+///   - ReentrancyGuard on mint() and withdraw().
+///   - Excess mint payment is refunded to the sender.
+///   - Per-wallet mint cap enforced on-chain (0 = unlimited).
+contract LanyardNFT is ERC721, ERC721URIStorage, Ownable2Step, ReentrancyGuard {
+    /// @dev Upper bound on a tokenURI so mints can't bloat state with absurd
+    ///      payloads. IPFS/https URIs are well under this.
+    uint256 public constant MAX_URI_LENGTH = 2048;
+
     uint256 private _nextTokenId;
 
     uint256 public mintPrice;
-    uint256 public maxSupply;
+    /// @dev Total mintable tokens. Immutable — cannot be changed post-deploy.
+    uint256 public immutable maxSupply;
     bool public mintEnabled;
 
     /// @notice Per-wallet mint cap. 0 = unlimited.
@@ -29,7 +42,11 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     string public contractURI;
 
     event Minted(address indexed to, uint256 indexed tokenId, string tokenURI);
+    event MintPriceUpdated(uint256 oldPrice, uint256 newPrice);
+    event MintEnabledUpdated(bool enabled);
     event PerWalletCapUpdated(uint256 newCap);
+    event ContractURIUpdated(string uri);
+    event TokenURIUpdated(uint256 indexed tokenId, string uri);
 
     constructor(
         uint256 mintPrice_,
@@ -46,12 +63,20 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     /// @return tokenId The newly minted token id.
     function mint(string calldata uri) external payable nonReentrant returns (uint256) {
         require(mintEnabled, "mint not enabled");
+        require(bytes(uri).length > 0 && bytes(uri).length <= MAX_URI_LENGTH, "invalid uri length");
         require(_nextTokenId < maxSupply, "max supply reached");
         require(msg.value >= mintPrice, "insufficient payment");
         require(perWalletCap == 0 || mintCount[msg.sender] < perWalletCap, "per-wallet limit reached");
 
         uint256 tokenId = _nextTokenId++;
         mintCount[msg.sender]++;
+
+        // Refund any overpayment — don't leave stranded value in the contract.
+        if (msg.value > mintPrice) {
+            (bool ok,) = msg.sender.call{value: msg.value - mintPrice}("");
+            require(ok, "refund failed");
+        }
+
         _safeMint(msg.sender, tokenId);
         _setTokenURI(tokenId, uri);
 
@@ -59,16 +84,19 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         return tokenId;
     }
 
+    /// @notice Minted token count. Always accurate — burning is not exposed.
     function totalSupply() external view returns (uint256) {
         return _nextTokenId;
     }
 
     function setMintPrice(uint256 mintPrice_) external onlyOwner {
+        emit MintPriceUpdated(mintPrice, mintPrice_);
         mintPrice = mintPrice_;
     }
 
     function setMintEnabled(bool enabled) external onlyOwner {
         mintEnabled = enabled;
+        emit MintEnabledUpdated(enabled);
     }
 
     function setPerWalletCap(uint256 cap) external onlyOwner {
@@ -79,6 +107,7 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     /// @notice Set the collection-level metadata URI.
     function setContractURI(string calldata uri) external onlyOwner {
         contractURI = uri;
+        emit ContractURIUpdated(uri);
     }
 
     /// @notice Repair/replace a token's metadata URI (e.g. a mint whose pin
@@ -86,6 +115,7 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     function setTokenURI(uint256 tokenId, string calldata uri) external onlyOwner {
         require(_ownerOf(tokenId) != address(0), "token does not exist");
         _setTokenURI(tokenId, uri);
+        emit TokenURIUpdated(tokenId, uri);
     }
 
     function withdraw() external onlyOwner nonReentrant {

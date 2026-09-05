@@ -20,7 +20,7 @@ import rateLimit from 'express-rate-limit'
 import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
 import { pinFile, pinJson, pinningEnabled, unpin } from './ipfs.js'
-import { saveShare, getShare, markMinted, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR } from './db.js'
+import { saveShare, getShare, markMinted, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR, SHELL_DIR } from './db.js'
 import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +29,55 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 function esc(s) {
   return String(s || '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+// Lightweight meta shell — og:meta tags crawlers (X/Telegram) need for
+// unfurling, plus an iframe to the full 6.6MB baked page for real users.
+// Saved to disk as a static file during bake so Cloudflare caches it as a
+// static resource across all edge nodes.
+function buildShell(meta, id) {
+  const pageUrl = `${PUBLIC_URL || ''}/full/${id}`
+  const imageUrl = meta?.image || ''
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${esc(meta?.name || 'Monad Lanyard')}</title>
+  <meta property="og:title" content="${esc(meta?.name || '')}"/>
+  <meta property="og:description" content="${esc(meta?.description || '')}"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:url" content="${PUBLIC_URL || ''}/s/${id}"/>
+  <meta property="og:image" content="${esc(imageUrl)}"/>
+  <meta property="og:image:width" content="1080"/>
+  <meta property="og:image:height" content="1350"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:title" content="${esc(meta?.name || '')}"/>
+  <meta name="twitter:description" content="${esc(meta?.description || '')}"/>
+  <meta name="twitter:image" content="${esc(imageUrl)}"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟣</text></svg>"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0a0612;color:#f2eefe;font-family:system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
+    .frame{width:100%;height:100%;border:none}
+    .loader{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0612;z-index:1;transition:opacity .4s}
+    .loader.done{opacity:0;pointer-events:none}
+    .spinner{width:32px;height:32px;border:3px solid rgba(255,255,255,.12);border-top-color:#7c5cff;border-radius:50%;animation:spin .7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    p{margin-top:14px;color:#a89fc9;font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="loader" id="ldr">
+    <div class="spinner"></div>
+    <p>Loading your lanyard…</p>
+  </div>
+  <iframe class="frame" src="${esc(pageUrl)}" onload="document.getElementById('ldr').classList.add('done')" allow="autoplay"></iframe>
+  <script>
+    setTimeout(function(){ if(document.getElementById('ldr')&&!document.getElementById('ldr').classList.contains('done'))window.location.href="${esc(pageUrl)}"},5000);
+  </script>
+</body>
+</html>`
 }
 
 const PORT = Number(process.env.PORT || 8787)
@@ -237,6 +286,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       imageExt: extFor(imageMime),
       htmlBuffer: selfPage ? Buffer.from(baked) : null,
       metaJson,
+      shellBuffer: selfPage ? Buffer.from(buildShell(metaJson, shareId)) : null,
     })
     pruneShares(300)
       .forEach((cid) => unpin(cid).catch(() => {})) // free Pinata slots (fire-and-forget)
@@ -244,19 +294,20 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     warmGateway(imageCid)
     warmGateway(htmlCid) // best effort — 6.6MB may not warm, hence PUBLIC_URL
 
-    // Warm first-party URLs so X/Twitter's crawler never hits a cold edge.
-    // X caches failures aggressively — if the first fetch is slow, it stays
-    // broken for hours. Hitting our own URLs populates Cloudflare's edge.
+    // Warm first-party URLs BEFORE returning response — X's crawler starts
+    // the moment the user pastes the URL. If we return first and warm
+    // async, X may hit origin cold. Awaiting guarantees Cloudflare has it.
     if (PUBLIC_URL) {
       const warmUrls = [
         `${PUBLIC_URL}/s/${shareId}`,
         selfImage, // /i/:id.png — og:image
       ].filter(Boolean)
-      for (const url of warmUrls) {
-        fetch(url, { signal: AbortSignal.timeout(15_000) })
-          .then((r) => console.log(`[warm-edge] ${url.slice(-30)}… ${r.status}`))
-          .catch(() => {})
-      }
+      await Promise.allSettled(
+        warmUrls.map((url) =>
+          fetch(url, { signal: AbortSignal.timeout(10_000) })
+            .then((r) => console.log(`[warm-edge] ${url.slice(-30)}… ${r.status}`))
+        )
+      )
     }
 
     // tokenURI as an always-fetchable HTTPS URL: explorers like MonadVision
@@ -335,58 +386,22 @@ app.get('/s/:id', (req, res) => {
     return res.sendFile(path.join(PAGE_DIR, row.page_file))
   }
 
+  // Static pre-generated shell — served as a file so Cloudflare caches it
+  // as a static resource on every edge (reliable, first-hit unfurl).
+  const shellFile = path.join(SHELL_DIR, `${req.params.id}.html`)
+  if (existsSync(shellFile)) {
+    res.set('Content-Type', 'text/html; charset=utf-8')
+    // Cache aggressively — the shell is immutable per share ID.
+    res.set('Cache-Control', 'public, max-age=86400, s-maxage=604800, immutable')
+    return res.sendFile(shellFile)
+  }
+
+  // Fallback: dynamically regenerate the shell for legacy shares that were
+  // baked before shells were saved to disk.
   const meta = JSON.parse(readFileSync(path.join(META_DIR, row.meta_file), 'utf8'))
-  const pageUrl = `${PUBLIC_URL || ''}/full/${req.params.id}`
-  const imageUrl = meta.image || ''
-
-  const shell = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>${esc(meta.name || 'Monad Lanyard')}</title>
-  <meta property="og:title" content="${esc(meta.name || '')}"/>
-  <meta property="og:description" content="${esc(meta.description || '')}"/>
-  <meta property="og:type" content="website"/>
-  <meta property="og:url" content="${PUBLIC_URL || ''}/s/${req.params.id}"/>
-  <meta property="og:image" content="${esc(imageUrl)}"/>
-  <meta property="og:image:width" content="1080"/>
-  <meta property="og:image:height" content="1350"/>
-  <meta name="twitter:card" content="summary_large_image"/>
-  <meta name="twitter:title" content="${esc(meta.name || '')}"/>
-  <meta name="twitter:description" content="${esc(meta.description || '')}"/>
-  <meta name="twitter:image" content="${esc(imageUrl)}"/>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟣</text></svg>"/>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{background:#0a0612;color:#f2eefe;font-family:system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
-    .frame{width:100%;height:100%;border:none}
-    .loader{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0612;z-index:1;transition:opacity .4s}
-    .loader.done{opacity:0;pointer-events:none}
-    .spinner{width:32px;height:32px;border:3px solid rgba(255,255,255,.12);border-top-color:#7c5cff;border-radius:50%;animation:spin .7s linear infinite}
-    @keyframes spin{to{transform:rotate(360deg)}}
-    p{margin-top:14px;color:#a89fc9;font-size:14px}
-  </style>
-</head>
-<body>
-  <div class="loader" id="ldr">
-    <div class="spinner"></div>
-    <p>Loading your lanyard…</p>
-  </div>
-  <iframe class="frame" src="${esc(pageUrl)}" onload="document.getElementById('ldr').classList.add('done')" allow="autoplay"></iframe>
-  <script>
-    // If iframe fails to load (e.g. no JS), redirect directly.
-    setTimeout(function(){ if(document.getElementById('ldr')&&!document.getElementById('ldr').classList.contains('done'))window.location.href="${esc(pageUrl)}"},5000);
-  </script>
-</body>
-</html>`
-
   res.set('Content-Type', 'text/html; charset=utf-8')
-  // Cache the meta shell — it's static per share (never changes after bake).
-  // Without this, X/Twitter's crawler hits origin on every request and may
-  // time out if the server is under load.
-  res.set('Cache-Control', 'public, max-age=86400, s-maxage=604800')
-  res.send(shell)
+  res.set('Cache-Control', 'public, max-age=86400, s-maxage=604800, immutable')
+  res.send(buildShell(meta, req.params.id))
 })
 
 // Full baked page — served under /full/:id so crawlers at /s/:id get the
