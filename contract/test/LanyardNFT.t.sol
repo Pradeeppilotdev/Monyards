@@ -29,10 +29,56 @@ contract LanyardNFTTest is Test, IERC721Receiver {
     }
 
     function test_RespectsMaxSupply() public {
-        for (uint256 i = 0; i < 10; i++) nft.mint(TOKEN_URI);
+        // One mint per wallet — use distinct wallets to fill the supply.
+        for (uint256 i = 0; i < 10; i++) {
+            address w = address(uint160(0x1000 + i));
+            vm.deal(w, 1 ether);
+            vm.prank(w);
+            nft.mint{value: 0 ether}(TOKEN_URI);
+        }
+        vm.prank(address(0x2000));
         vm.expectRevert("max supply reached");
         nft.mint(TOKEN_URI);
         assertEq(nft.totalSupply(), 10);
+    }
+
+    function test_OneMintPerWallet() public {
+        address minter = address(0xb0b);
+        nft.mint(TOKEN_URI);
+        vm.prank(minter);
+        nft.mint(TOKEN_URI);
+        // Same wallet mints twice -> rejected.
+        vm.prank(minter);
+        vm.expectRevert("already minted");
+        nft.mint(TOKEN_URI);
+        assertEq(nft.mintCount(minter), 1);
+    }
+
+    function test_TransferOwnershipDoesNotEnableRemint() public {
+        address minter = address(0xb0b);
+        address buddy = address(0xcc);
+        nft.mint(TOKEN_URI); // minted by address(this)
+        vm.prank(buddy);
+        nft.mint(TOKEN_URI); // buddy mints theirs
+
+        // buddy transfers their token away -> balance 0, but mintCount stays.
+        vm.prank(buddy);
+        nft.transferFrom(buddy, minter, 1);
+        assertEq(nft.balanceOf(buddy), 0);
+        assertEq(nft.mintCount(buddy), 1);
+
+        // buddy should NOT be able to re-mint.
+        vm.prank(buddy);
+        vm.expectRevert("already minted");
+        nft.mint(TOKEN_URI);
+    }
+
+    function test_OnlyOwnerCannotBypassCap() public {
+        nft.setMintPrice(0 ether);
+        nft.mint(TOKEN_URI); // owner mints once
+        // Even the owner cannot mint a second time.
+        vm.expectRevert("already minted");
+        nft.mint(TOKEN_URI);
     }
 
     function test_MintDisabled() public {

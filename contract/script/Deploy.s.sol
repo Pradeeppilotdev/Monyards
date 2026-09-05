@@ -23,5 +23,7 @@ contract DeployLanyardNFT is Script {
         console.log("LanyardNFT deployed at", address(nft));
         console.log("mintPrice", mintPrice);
         console.log("maxSupply", maxSupply);
+        // One-mint-per-wallet is a hardcoded, immutable contract invariant.
+        console.log("perWalletCap", "1 (immutable)");
     }
 }

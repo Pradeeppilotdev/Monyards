@@ -19,7 +19,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///     caught and reverted by the current owner before the new one accepts.
 ///   - ReentrancyGuard on mint() and withdraw().
 ///   - Excess mint payment is refunded to the sender.
-///   - Per-wallet mint cap enforced on-chain (0 = unlimited).
+///   - Strictly ONE mint per wallet, enforced on-chain and immutable — not even
+///     the owner can relax it. Everyone gets exactly one Lanyard, ever.
 contract LanyardNFT is ERC721, ERC721URIStorage, Ownable2Step, ReentrancyGuard {
     /// @dev Upper bound on a tokenURI so mints can't bloat state with absurd
     ///      payloads. IPFS/https URIs are well under this.
@@ -32,8 +33,9 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable2Step, ReentrancyGuard {
     uint256 public immutable maxSupply;
     bool public mintEnabled;
 
-    /// @notice Per-wallet mint cap. 0 = unlimited.
-    uint256 public perWalletCap;
+    /// @dev Total number of mints each wallet has performed, forever.
+    ///      Never decremented — so transferring a Lanyard away still counts,
+    ///      and a wallet can never mint a second one.
     mapping(address => uint256) public mintCount;
 
     /// @notice Collection-level metadata URI (pinned JSON). Marketplaces read
@@ -44,7 +46,6 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable2Step, ReentrancyGuard {
     event Minted(address indexed to, uint256 indexed tokenId, string tokenURI);
     event MintPriceUpdated(uint256 oldPrice, uint256 newPrice);
     event MintEnabledUpdated(bool enabled);
-    event PerWalletCapUpdated(uint256 newCap);
     event ContractURIUpdated(string uri);
     event TokenURIUpdated(uint256 indexed tokenId, string uri);
 
@@ -66,11 +67,12 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable2Step, ReentrancyGuard {
         require(bytes(uri).length > 0 && bytes(uri).length <= MAX_URI_LENGTH, "invalid uri length");
         require(_nextTokenId < maxSupply, "max supply reached");
         require(msg.value >= mintPrice, "insufficient payment");
-        require(perWalletCap == 0 || mintCount[msg.sender] < perWalletCap, "per-wallet limit reached");
+        // Exactly one Lanyard per wallet, forever. Immutable requirement —
+        // tracked by mintCount so transferring one away can't enable a re-mint.
+        require(mintCount[msg.sender] == 0, "already minted");
 
         uint256 tokenId = _nextTokenId++;
         mintCount[msg.sender]++;
-
         // Refund any overpayment — don't leave stranded value in the contract.
         if (msg.value > mintPrice) {
             (bool ok,) = msg.sender.call{value: msg.value - mintPrice}("");
@@ -99,12 +101,6 @@ contract LanyardNFT is ERC721, ERC721URIStorage, Ownable2Step, ReentrancyGuard {
         emit MintEnabledUpdated(enabled);
     }
 
-    function setPerWalletCap(uint256 cap) external onlyOwner {
-        perWalletCap = cap;
-        emit PerWalletCapUpdated(cap);
-    }
-
-    /// @notice Set the collection-level metadata URI.
     function setContractURI(string calldata uri) external onlyOwner {
         contractURI = uri;
         emit ContractURIUpdated(uri);

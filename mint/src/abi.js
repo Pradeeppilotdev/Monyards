@@ -37,13 +37,6 @@ export const abi = [
   },
   {
     type: 'function',
-    name: 'perWalletCap',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-  {
-    type: 'function',
     name: 'mintCount',
     stateMutability: 'view',
     inputs: [{ name: '', type: 'address' }],
