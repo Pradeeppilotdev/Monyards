@@ -324,6 +324,8 @@ export default function App() {
   useEffect(() => {
     if (!publicClient || !config?.contractAddress || !account) {
       setMinted(null)
+      setMyTokenId(null)
+      setRefEarnings(null)
       return
     }
     let cancelled = false
@@ -787,7 +789,7 @@ export default function App() {
           )}
 
           <div className="mint-actions">
-            {minted ? (
+            {minted && account ? (
               <div className="owned-banner">
                 <div className="owned-top">
                   <span className="owned-badge">OWNED</span>
