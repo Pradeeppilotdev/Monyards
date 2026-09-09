@@ -8,7 +8,6 @@ import { HAS_APPKIT, PROJECT_ID, appKitModal, makeMonadChain } from './wallet'
 import { createPublicClient, createWalletClient, custom, formatEther, http, parseEventLogs } from 'viem'
 import { waitForTransactionReceipt } from 'viem/actions'
 import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
-import { useDisconnect } from '@reown/appkit-controllers/react'
 import { recordShareClip, captureLanyardImage } from './record'
 import Silk from '../../animation/src/Silk'
 
@@ -143,7 +142,6 @@ const VideoIcon = (props) => (
 )
 
 export default function App() {
-  const { disconnect } = useDisconnect()
   const [config, setConfig] = useState(null)
   const [handle, setHandle] = useState('')
   const [name, setName] = useState('')
@@ -175,6 +173,7 @@ export default function App() {
   const [refClaiming, setRefClaiming] = useState(false)
   const providerRef = useRef(null)
   const panelRef = useRef(null)
+  const successRef = useRef(null)
   const recControllerRef = useRef(null)
   const [cam] = useState(() => previewCamera())
   // Scroll cue: show once per device until they actually scroll — localStorage
@@ -341,6 +340,50 @@ export default function App() {
       .catch(() => !cancelled && setRefEarnings(null))
     return () => (cancelled = true)
   }, [publicClient, config, account])
+
+  // The owned view links the user's minted token on MonadVision. The token id
+  // comes from the Minted event after a fresh mint; on later visits we find it
+  // by scanning minted ids (each wallet holds exactly one). Cached per wallet.
+  useEffect(() => {
+    if (!publicClient || !config?.contractAddress || !account || !minted || myTokenId != null) return
+    const key = `lanyard-token-${account.toLowerCase()}`
+    const cached = sessionStorage.getItem(key)
+    if (cached != null) {
+      setMyTokenId(Number(cached))
+      return
+    }
+    let cancelled = false
+    publicClient
+      .readContract({ address: config.contractAddress, abi, functionName: 'totalSupply', args: [] })
+      .then((supply) => {
+        const max = Math.min(Number(supply), 512)
+        const scan = async () => {
+          for (let i = 0; i < max && !cancelled; i++) {
+            const owner = await publicClient
+              .readContract({ address: config.contractAddress, abi, functionName: 'ownerOf', args: [BigInt(i)] })
+              .catch(() => null)
+            if (owner && owner.toLowerCase() === account.toLowerCase()) {
+              sessionStorage.setItem(key, String(i))
+              setMyTokenId(i)
+              return
+            }
+          }
+        }
+        scan().catch(() => {})
+      })
+      .catch(() => {})
+    return () => (cancelled = true)
+  }, [publicClient, config, account, minted, myTokenId])
+
+  // The success card renders below the fold at the bottom of the panel — bring
+  // it on screen so the tx link is actually seen after a mint/claim.
+  useEffect(() => {
+    if (!result) return
+    const t = requestAnimationFrame(() => {
+      successRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+    return () => cancelAnimationFrame(t)
+  }, [result])
 
   async function getProvider() {
     if (HAS_APPKIT) {
@@ -746,10 +789,33 @@ export default function App() {
           <div className="mint-actions">
             {minted ? (
               <div className="owned-banner">
-                <div className="owned-row">
+                <div className="owned-top">
                   <span className="owned-badge">OWNED</span>
-                  <span className="owned-text">This wallet's Lanyard is minted — it's yours, forever.</span>
+                  <div className="owned-actions">
+                    {HAS_APPKIT ? (
+                      <button
+                        className="owned-wallet"
+                        onClick={() => appKitModal.open()}
+                        title="Wallet — account &amp; disconnect"
+                      >
+                        {account.slice(0, 6)}…{account.slice(-4)}
+                      </button>
+                    ) : (
+                      <span className="owned-wallet non-interactive">{account.slice(0, 6)}…{account.slice(-4)}</span>
+                    )}
+                    {myTokenId != null && config && (
+                      <a
+                        className="owned-token"
+                        href={`${config.explorer}/token/${config.contractAddress}?a=${myTokenId}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        NFT #{myTokenId}
+                      </a>
+                    )}
+                  </div>
                 </div>
+                <p className="owned-text">This wallet's Lanyard is minted — it's yours, forever.</p>
                 {myReferralLink && (
                   <div className="owned-referral">
                     <span className="owned-ref-label">Share &amp; earn — referral link:</span>
@@ -764,11 +830,6 @@ export default function App() {
                       {refClaiming ? 'Claiming…' : 'Claim'}
                     </button>
                   </div>
-                )}
-                {account && HAS_APPKIT && (
-                  <button className="disconnect-btn" onClick={() => disconnect()} title="Disconnect wallet">
-                    Disconnect
-                  </button>
                 )}
               </div>
             ) : (
@@ -810,7 +871,7 @@ export default function App() {
           {error && <div className="error">{error}</div>}
 
           {result && (
-            <div className="success">
+            <div className="success" ref={successRef}>
               <p className="success-title">Minted! Your card is on-chain.</p>
               <p className="success-sub">
                 Token minted to {account ? `${account.slice(0, 6)}…${account.slice(-4)}` : 'your wallet'}.

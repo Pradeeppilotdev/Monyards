@@ -197,7 +197,7 @@ Add: `mint(string,address)` (new signature), `referrerOf`, `referralBalance`,
 - Set `referralBps` (e.g. 1000) and `royaltyBps` (e.g. 500) post-deploy.
 - New `CONTRACT_ADDRESS` in server `.env`; static-assets cache rule already
   keeps `/api/config` uncacheable and HTML uncached.
-- Re-verify on MonadScan; update frontend ABI before building.
+- Re-verify on MonadVision; update frontend ABI before building.
 
 ---
 

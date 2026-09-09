@@ -48,8 +48,8 @@ Networks (checked Aug 2026):
 
 | Network | Chain ID | RPC                            | Explorer                  | Faucet             |
 |---------|----------|--------------------------------|---------------------------|--------------------|
-| Testnet | 10143    | https://testnet-rpc.monad.xyz  | https://testnet.monadscan.com | https://faucet.monad.xyz |
-| Mainnet | 10150    | https://rpc.monad.xyz          | https://monadscan.com    | n/a (real MON)     |
+| Testnet | 10143    | https://testnet-rpc.monad.xyz  | https://testnet.monadvision.com | https://faucet.monad.xyz |
+| Mainnet | 143      | https://rpc.monad.xyz          | https://monadvision.com    | n/a (real MON)     |
 
 ## 2. Card design (`shared/card-svg.js`)
 

@@ -42,7 +42,7 @@ const CONFIG = {
   contractAddress: process.env.CONTRACT_ADDRESS || null,
   chainId: Number(process.env.CHAIN_ID || 10143),
   rpcUrl: process.env.RPC_URL || 'https://testnet-rpc.monad.xyz',
-  explorer: process.env.EXPLORER_URL || 'https://testnet.monadscan.com',
+  explorer: process.env.EXPLORER_URL || 'https://testnet.monadvision.com',
   name: 'Monad Lanyard',
   symbol: 'MLYD',
 }

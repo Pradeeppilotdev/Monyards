@@ -14,7 +14,7 @@ export const HAS_APPKIT = Boolean(PROJECT_ID)
 // Mainnet (143) or Testnet (10143). Defaults to testnet.
 const NETWORK_ID = Number(import.meta.env.VITE_CHAIN_ID || 10143)
 const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://testnet-rpc.monad.xyz'
-const EXPLORER_URL = import.meta.env.VITE_EXPLORER_URL || 'https://testnet.monadscan.com'
+const EXPLORER_URL = import.meta.env.VITE_EXPLORER_URL || 'https://testnet.monadvision.com'
 
 export function makeMonadChain({ id = NETWORK_ID, rpcUrl = RPC_URL, explorer = EXPLORER_URL } = {}) {
   return defineChain({
@@ -22,7 +22,7 @@ export function makeMonadChain({ id = NETWORK_ID, rpcUrl = RPC_URL, explorer = E
     name: id === 10143 ? 'Monad Testnet' : 'Monad',
     nativeCurrency: { name: 'Monad', symbol: 'MON', decimals: 18 },
     rpcUrls: { default: { http: [rpcUrl] } },
-    blockExplorers: { default: { name: 'MonadScan', url: explorer } },
+    blockExplorers: { default: { name: 'MonadVision', url: explorer } },
   })
 }
 

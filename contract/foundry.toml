@@ -12,5 +12,5 @@ monad_testnet = "${MONAD_TESTNET_RPC_URL}"
 monad_mainnet = "${MONAD_MAINNET_RPC_URL}"
 
 [etherscan]
-monad_testnet = { key = "${MONADSCAN_API_KEY}", url = "https://testnet.monadscan.com/api" }
-monad_mainnet = { key = "${MONADSCAN_API_KEY}", url = "https://monadscan.com/api" }
+monad_testnet = { key = "${MONADSCAN_API_KEY}", url = "https://testnet.monadvision.com/api" }
+monad_mainnet = { key = "${MONADSCAN_API_KEY}", url = "https://monadvision.com/api" }

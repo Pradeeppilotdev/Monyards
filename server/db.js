@@ -99,12 +99,18 @@ export function shareByToken(tokenId) {
   return db.prepare('SELECT * FROM shares WHERE token_id = ? AND minted = 1 LIMIT 1').get(Number(tokenId)) || null
 }
 
-// Handle dedup — the first baker of a handle owns the card. Re-stages of the
-// same handle reuse that bake instead of generating a fresh copy per click
-// (case-insensitive match; @ stripped upstream).
+// Handle dedup — one card per handle. A handle with a live minted token
+// prefers that share (the on-chain card) so re-stages keep pointing at the
+// minted card; otherwise the first-ever bake of the handle owns the name.
+// Case-insensitive match; @ stripped upstream.
 export function shareByHandle(handle) {
   if (!handle) return null
-  return db.prepare('SELECT * FROM shares WHERE lower(handle) = lower(?) ORDER BY created_at ASC, id ASC LIMIT 1').get(String(handle)) || null
+  const rows = db
+    .prepare('SELECT * FROM shares WHERE lower(handle) = lower(?) ORDER BY created_at DESC, id DESC')
+    .all(String(handle))
+  // A handle with a minted token resolves to its most recent mint (the live
+  // on-chain card); otherwise the first-ever bake owns the name.
+  return rows.find((r) => r.minted === 1) || rows[rows.length - 1] || null
 }
 
 export function recentShares(limit = 12) {
