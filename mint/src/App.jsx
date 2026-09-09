@@ -4,9 +4,11 @@ import { renderCardSvg, CARD_W, CARD_H } from '../../shared/card-svg'
 import { previewCamera } from '../../animation/src/camera'
 import backCard from '../../animation/src/assets/back-card.svg'
 import { abi } from './abi'
-import { HAS_APPKIT, PROJECT_ID, appKitModal, monadTestnet } from './wallet'
-import { createPublicClient, createWalletClient, custom, formatEther, http } from 'viem'
+import { HAS_APPKIT, PROJECT_ID, appKitModal, makeMonadChain } from './wallet'
+import { createPublicClient, createWalletClient, custom, formatEther, http, parseEventLogs } from 'viem'
+import { waitForTransactionReceipt } from 'viem/actions'
 import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
+import { useDisconnect } from '@reown/appkit-controllers/react'
 import { recordShareClip, captureLanyardImage } from './record'
 import Silk from '../../animation/src/Silk'
 
@@ -44,6 +46,7 @@ function friendlyError(e) {
   if (/reject|denied|4001|user cancelled/i.test(msg)) return null // they know
   if (/Too many bakes/i.test(msg)) return 'Too many at once — give it a few minutes.'
   if (/insufficient/i.test(msg)) return 'Not enough test MON in that wallet for the mint.'
+  if (/already minted/i.test(msg)) return 'This wallet already minted its Lanyard — one per wallet, forever.'
   return "Didn't go through — give it another go."
 }
 
@@ -125,7 +128,22 @@ const XIcon = (props) => (
   </svg>
 )
 
+const CameraIcon = (props) => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+    <circle cx="12" cy="13" r="4" />
+  </svg>
+)
+
+const VideoIcon = (props) => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M23 7l-7 5 7 5V7z" />
+    <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+  </svg>
+)
+
 export default function App() {
+  const { disconnect } = useDisconnect()
   const [config, setConfig] = useState(null)
   const [handle, setHandle] = useState('')
   const [name, setName] = useState('')
@@ -133,15 +151,28 @@ export default function App() {
   const [pfPalette, setPfPalette] = useState(null)
   const [account, setAccount] = useState(null)
   const [mintPrice, setMintPrice] = useState(null)
+  const [minted, setMinted] = useState(null) // null=unknown, true/false once checked
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const [configLoaded, setConfigLoaded] = useState(false)
   const [result, setResult] = useState(null)
   const [recording, setRecording] = useState(false)
   const [clip, setClip] = useState(null)
   const [sharing, setSharing] = useState(false)
+  const [bakeSecs, setBakeSecs] = useState(0)
   const [shareHint, setShareHint] = useState(null)
   const [xIntent, setXIntent] = useState(null)
+  const [xLeaving, setXLeaving] = useState(false)
   const [touched, setTouched] = useState(false)
+  // Referral: ?ref=<tokenId> — the referring Lanyard's token. Validated
+  // against the chain (ownerOf must exist) before being passed to mint.
+  const [refTokenId, setRefTokenId] = useState(null) // validated integer or null
+  const [refInfo, setRefInfo] = useState(null) // {handle, displayName} for the chip
+  const [referrerOfRef, setReferrerOfRef] = useState(null) // ownerOf(refTokenId)
+  const [myTokenId, setMyTokenId] = useState(null) // my token after mint
+  const [myReferralLink, setMyReferralLink] = useState(null)
+  const [refEarnings, setRefEarnings] = useState(null) // my claimable referral balance
+  const [refClaiming, setRefClaiming] = useState(false)
   const providerRef = useRef(null)
   const panelRef = useRef(null)
   const recControllerRef = useRef(null)
@@ -176,16 +207,52 @@ export default function App() {
     return () => clearTimeout(t)
   }, [result])
 
+  // Same for errors — show, then get out of the way.
+  useEffect(() => {
+    if (!error) return
+    const t = setTimeout(() => setError(null), 5000)
+    return () => clearTimeout(t)
+  }, [error])
+
+  // Toast-style hints fade out on their own after a few seconds.
+  useEffect(() => {
+    if (!shareHint) return
+    const t = setTimeout(() => setShareHint(null), 5000)
+    return () => clearTimeout(t)
+  }, [shareHint])
+
+  // Live bake countdown — shows staging is working while it runs (counts down
+// from the ~30s estimate inside the button label).
+  useEffect(() => {
+    if (!sharing) {
+      setBakeSecs(0)
+      return
+    }
+    const start = Date.now()
+    const iv = setInterval(() => setBakeSecs(Math.floor((Date.now() - start) / 1000)), 500)
+    return () => clearInterval(iv)
+  }, [sharing])
+
   const debouncedHandle = useDebounced(handle, 600)
   const trimmed = debouncedHandle.replace(/^@/, '').trim()
   const pfpUrl = trimmed ? AVATAR(trimmed) : null
 
   // Fetch server config (chain, contract, explorer).
   useEffect(() => {
+    let cancelled = false
     fetch('/api/config')
       .then((r) => r.json())
-      .then(setConfig)
-      .catch((e) => setError('Could not load config: ' + e.message))
+      .then((c) => {
+        if (cancelled) return
+        setConfig(c)
+        setConfigLoaded(true)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setConfigLoaded(true)
+        setError('Could not load config: ' + e.message)
+      })
+    return () => (cancelled = true)
   }, [])
 
   // Live preview — mounts instantly with a default card, personalizes as they type.
@@ -196,7 +263,7 @@ export default function App() {
       const palette = pfpUrl ? await extractPalette(pfpUrl) : null
       if (cancelled) return
       setPfPalette(palette)
-      const front = await renderCardSvg({ pfp: pfpUrl, username: trimmed, name, palette })
+      const front = await renderCardSvg({ pfp: pfpUrl, username: trimmed, name, palette, chainId: config?.chainId })
       if (!cancelled) setPreview(front)
     })()
     return () => (cancelled = true)
@@ -220,6 +287,60 @@ export default function App() {
       .then(setMintPrice)
       .catch(() => setMintPrice(null))
   }, [publicClient, config])
+
+  // Referral resolution: parse ?ref=<tokenId>, validate it's a real minted
+  // token (ownerOf must succeed), and fetch its handle for the chip. If the
+  // ref is invalid or self-owned we silently fall back to a normal mint.
+  useEffect(() => {
+    let cancelled = false
+    const raw = new URLSearchParams(window.location.search).get('ref')
+    if (!raw || !/^\d+$/.test(raw) || !publicClient || !config?.contractAddress) {
+      setRefTokenId(null)
+      setRefInfo(null)
+      setReferrerOfRef(null)
+      return
+    }
+    const tokenId = Number(raw)
+    setRefTokenId(tokenId)
+    publicClient
+      .readContract({ address: config.contractAddress, abi, functionName: 'ownerOf', args: [BigInt(tokenId)] })
+      .then((owner) => {
+        if (cancelled) return
+        setReferrerOfRef(owner)
+        return fetch(`/api/refinfo?tokenId=${tokenId}`)
+          .then((r) => r.json())
+          .then((d) => !cancelled && d?.info && setRefInfo(d.info))
+      })
+      .catch(() => {
+        if (cancelled) return
+        setRefTokenId(null)
+        setRefInfo(null)
+        setReferrerOfRef(null)
+      })
+    return () => (cancelled = true)
+  }, [publicClient, config])
+
+  // Once we know who's connected, check if they already minted — if so the
+  // mint box becomes a "yours forever" state instead of offering another mint.
+  useEffect(() => {
+    if (!publicClient || !config?.contractAddress || !account) {
+      setMinted(null)
+      return
+    }
+    let cancelled = false
+    publicClient
+      .readContract({ address: config.contractAddress, abi, functionName: 'mintCount', args: [account] })
+      .then((n) => !cancelled && setMinted(Boolean(n)))
+      .catch(() => !cancelled && setMinted(false))
+
+    // Referral balance for the OWNED banner — how much this wallet has earned
+    // by driving mints. Claimable via claimReferralFees().
+    publicClient
+      .readContract({ address: config.contractAddress, abi, functionName: 'referralBalance', args: [account] })
+      .then((b) => !cancelled && b > 0n && setRefEarnings(b))
+      .catch(() => !cancelled && setRefEarnings(null))
+    return () => (cancelled = true)
+  }, [publicClient, config, account])
 
   async function getProvider() {
     if (HAS_APPKIT) {
@@ -277,6 +398,32 @@ export default function App() {
     })
   }
 
+  // Dismissing the share CTA fades it out rather than snapping it away.
+  function dismissX() {
+    setXLeaving(true)
+  }
+
+  // One click: capture the lanyard scene (card, rope, silk) as the poster
+  // image and save it straight to Downloads — same framing as the share pic.
+  async function downloadPhoto() {
+    try {
+      const canvas = document.querySelector('.preview canvas')
+      if (!canvas) throw new Error('Preview canvas not found')
+      const blob = await captureLanyardImage({ canvas })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `lanyard-${trimmed || 'card'}.${blob.type === 'image/png' ? 'png' : 'jpg'}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 5000)
+      setShareHint('Photo downloaded — share it anywhere.')
+    } catch (e) {
+      setError(friendlyError(e))
+    }
+  }
+
   async function shareOnX() {
     setSharing(true)
     setError(null)
@@ -307,8 +454,12 @@ export default function App() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'bake failed')
+      if (data.cached) setShareHint(`@${data.handle} already has a card — reusing its link.`)
       const gateway = data.shareUrl || data.animationGateway || ipfsToGateway(data.animationUrl)
-      const text = `Here's mine. Your turn if you're a real Monad OG 🟣\nGrab yours 👇\n${gateway}\n\nMake your own → cards.pradeeppilot.xyz`
+      // Post-mint, the shared link carries the minter's token id so their
+      // audience mints via them — attention turns into referral earnings.
+      const refLink = myTokenId != null ? `${location.origin}/?ref=${myTokenId}` : null
+      const text = `here's mine — where's yours?\n\n${gateway}\n\ngrab your monad lanyard at → ${refLink || 'cards.pradeeppilot.xyz'}`
 
       // Mobile: native share sheet — one tap, pick X, done.
       try {
@@ -323,14 +474,12 @@ export default function App() {
         if (e.name === 'AbortError') return
       }
 
-      // Desktop: copy image to clipboard and show the X composer button.
-      // Browsers block popups after async work — no way around the extra click.
-      try {
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
-      } catch {}
+      // Desktop: open the X composer directly — the card and link are staged in
+      // the tweet, no clipboard round-trip needed. Browsers block popups after
+      // async work, so the highlighted CTA below stays a real click.
       const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`
       setXIntent(intent)
-      setShareHint('Card pic is on your clipboard. Click below to open X and post.')
+      setXLeaving(false)
     } catch (e) {
       setError(friendlyError(e))
       console.error(e)
@@ -342,10 +491,23 @@ export default function App() {
   async function mint() {
     setError(null)
     setResult(null)
+    if (!configLoaded) return // config still loading — mint button is disabled
     if (!config?.contractAddress) return setError('Contract not deployed yet — check back soon.')
     if (!account) return setError('Connect your wallet first.')
     setBusy(true)
     try {
+      // Pre-flight the one-per-wallet rule so the wallet never silently fails
+      // its fee estimation (the revert would show no gas and confuse users).
+      const mintCount = await publicClient.readContract({
+        address: config.contractAddress,
+        abi,
+        functionName: 'mintCount',
+        args: [account],
+      })
+      if (mintCount > 0) {
+        setError('This wallet already minted its Lanyard — one per wallet, forever.')
+        return
+      }
       // Rasterize the card for the pinned static image — most wallets and
       // marketplaces can't render SVG.
       const pngDataUrl = preview ? await blobToDataUrl(await rasterizeCard(preview)) : undefined
@@ -358,35 +520,72 @@ export default function App() {
           pfp: pfpUrl || undefined,
           palette: pfPalette || undefined,
           shareImage: pngDataUrl,
+          refTokenId: refTokenId ?? undefined,
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'bake failed')
 
       const eth = await getProvider()
-      const walletClient = createWalletClient({ account, chain: monadTestnet, transport: custom(eth) })
+      const walletClient = createWalletClient({ account, chain: makeMonadChain({ id: config.chainId, rpcUrl: config.rpcUrl, explorer: config.explorer }), transport: custom(eth) })
+      // The contract re-validates on-chain: self-refer reverted, non-holder
+      // referrer reverted — so pass the validated referrer, address(0) if none.
+      const referrer = referrerOfRef && referrerOfRef.toLowerCase() !== account.toLowerCase() ? referrerOfRef : '0x0000000000000000000000000000000000000000'
       const hash = await walletClient.writeContract({
         address: config.contractAddress,
         abi,
         functionName: 'mint',
-        args: [data.tokenURI],
+        args: [data.tokenURI, referrer],
         value: mintPrice ?? 0n,
         account,
       })
       // Flag the share as minted so the server's prune never unpins a live
-      // token's content.
+      // token's content. Include the tokenId so the referral chain resolves.
       if (data.shareId) {
-        fetch('/api/minted', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shareId: data.shareId }),
-        }).catch(() => {})
+        waitForTransactionReceipt(publicClient, { hash })
+          .then((receipt) => {
+            const [mintLog] = parseEventLogs({ abi, logs: receipt.logs, eventName: 'Minted' })
+            const tokenId = Number(mintLog?.args?.tokenId ?? 0)
+            if (tokenId > 0) {
+              setMyTokenId(tokenId)
+              setMyReferralLink(`${location.origin}/?ref=${tokenId}`)
+              fetch('/api/minted', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shareId: data.shareId, tokenId }),
+              }).catch(() => {})
+            }
+          })
+          .catch(() => {})
       }
+      setMinted(true)
       setResult({ hash, tokenURI: data.tokenURI, animationUrl: data.animationUrl })
     } catch (e) {
       setError(friendlyError(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function claimReferral() {
+    if (!account || refEarnings == null) return
+    setRefClaiming(true)
+    setError(null)
+    try {
+      const eth = await getProvider()
+      const walletClient = createWalletClient({ account, chain: makeMonadChain({ id: config.chainId, rpcUrl: config.rpcUrl, explorer: config.explorer }), transport: custom(eth) })
+      const hash = await walletClient.writeContract({
+        address: config.contractAddress,
+        abi,
+        functionName: 'claimReferralFees',
+        account,
+      })
+      setRefEarnings(0n)
+      setResult({ hash, tokenURI: null, animationUrl: null })
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setRefClaiming(false)
     }
   }
 
@@ -469,31 +668,60 @@ export default function App() {
           </div>
         </label>
 
-        <button className="btn x-btn shimmer-btn" onClick={shareOnX} disabled={sharing} style={{ width: '100%', marginTop: 22 }}>
-          <XIcon />
-          <span>{sharing ? 'Baking…' : 'Share on X'}</span>
+        <button
+          className="btn x-btn shimmer-btn"
+          onClick={shareOnX}
+          disabled={sharing || !trimmed}
+          title={trimmed ? undefined : 'Type your handle first'}
+          style={{ width: '100%', marginTop: 22 }}
+        >
+          {sharing ? `Baking… ~${Math.max(0, 30 - bakeSecs)}s` : 'Stage your post'}
         </button>
         <p className="micro">One click — your lanyard pic + live link, staged for the post.</p>
-        {shareHint && <p className="micro share-hint">{shareHint}</p>}
 
-        <button
-          className={`btn record-ghost ${recording ? 'recording' : ''}`}
-          onClick={recordClip}
-          style={{ width: '100%', marginTop: 12 }}
-        >
-          {recording ? '■ Stop recording' : '○ Record a loop of your card'}
-        </button>
+        <div className="media-actions">
+          <button className="btn photo-btn" onClick={downloadPhoto} disabled={!preview} style={{ width: '100%' }}>
+            <CameraIcon />
+            <span>Photo</span>
+          </button>
+          <button
+            className={`btn record-ghost ${recording ? 'recording' : ''}`}
+            onClick={recordClip}
+            style={{ width: '100%' }}
+          >
+            <VideoIcon />
+            <span>{recording ? 'Stop recording' : 'Record a loop'}</span>
+          </button>
+        </div>
 
         {xIntent && (
-          <>
+          <div
+            className={`x-cta ${xLeaving ? 'x-cta--leave' : ''}`}
+            onAnimationEnd={() => {
+              if (xLeaving) {
+                setXIntent(null)
+                setXLeaving(false)
+              }
+            }}
+          >
+            <button
+              className="x-cta-close"
+              onClick={dismissX}
+              aria-label="Dismiss share prompt"
+              title="Dismiss"
+            >
+              ✕
+            </button>
             <a className="btn x-open" href={xIntent} target="_blank" rel="noreferrer">
-              Open X composer →
+              <span>Post on</span>
+              <XIcon />
             </a>
             <p className="micro share-hint x-tip">
               The preview may take a moment to appear — just hit Post, the card shows on your tweet right away.
             </p>
-          </>
+          </div>
         )}
+        {shareHint && <p className="micro share-hint share-hint--fade">{shareHint}</p>}
 
         <div className="divider">
           <span>make it permanent</span>
@@ -508,28 +736,75 @@ export default function App() {
             <div className="warn">Contract not deployed yet — preview and share work fine, minting opens soon.</div>
           )}
 
+          {refInfo && refTokenId != null && !minted && (
+            <div className="ref-chip">
+              <span className="ref-chip-dot" />
+              You're minting via <b>@{refInfo.handle || refInfo.displayName}</b>'s card — a share of your mint goes to them.
+            </div>
+          )}
+
           <div className="mint-actions">
-            {HAS_APPKIT ? (
-              <button className="btn secondary wallet-btn" onClick={connect}>
-                {account ? (
-                  <span>{account.slice(0, 6)}…{account.slice(-4)}</span>
-                ) : (
-                  'Connect wallet'
+            {minted ? (
+              <div className="owned-banner">
+                <div className="owned-row">
+                  <span className="owned-badge">OWNED</span>
+                  <span className="owned-text">This wallet's Lanyard is minted — it's yours, forever.</span>
+                </div>
+                {myReferralLink && (
+                  <div className="owned-referral">
+                    <span className="owned-ref-label">Share &amp; earn — referral link:</span>
+                    <code className="owned-ref-link">{myReferralLink.replace(/^https?:\/\//, '')}</code>
+                    <p className="micro share-hint">Anyone who mints via your link earns you a referral fee.</p>
+                  </div>
                 )}
-              </button>
-            ) : account ? (
-              <div className="wallet-row">
-                {account.slice(0, 6)}…{account.slice(-4)}
+                {refEarnings != null && (
+                  <div className="owned-earnings">
+                    <span>Referral earned: {formatEther(refEarnings)} MON</span>
+                    <button className="btn ref-claim" onClick={claimReferral} disabled={refClaiming || refEarnings === 0n}>
+                      {refClaiming ? 'Claiming…' : 'Claim'}
+                    </button>
+                  </div>
+                )}
+                {account && HAS_APPKIT && (
+                  <button className="disconnect-btn" onClick={() => disconnect()} title="Disconnect wallet">
+                    Disconnect
+                  </button>
+                )}
               </div>
             ) : (
-              <button className="btn secondary wallet-btn" onClick={connect}>
-                Connect wallet
-              </button>
-            )}
+              <>
+                {HAS_APPKIT ? (
+                  <div className="wallet-lockup">
+                    <button className="btn secondary wallet-btn" onClick={connect}>
+                      {account ? (
+                        <span>{account.slice(0, 6)}…{account.slice(-4)}</span>
+                      ) : (
+                        'Connect wallet'
+                      )}
+                    </button>
+                  </div>
+                ) : account ? (
+                  <div className="wallet-lockup">
+                    <div className="wallet-row">
+                      {account.slice(0, 6)}…{account.slice(-4)}
+                    </div>
+                    {window.ethereum && (
+                      <button className="disconnect-btn" onClick={() => setAccount(null)} title="Disconnect wallet">
+                        Disconnect
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button className="btn secondary wallet-btn" onClick={connect}>
+                    Connect wallet
+                  </button>
+                )}
 
-            <button className="btn primary mint-btn" disabled={busy || !account} onClick={mint}>
-              {mintLabel}
-            </button>
+                <button className="btn primary mint-btn" disabled={busy || !account || !configLoaded} onClick={mint}>
+                  {!configLoaded ? 'Loading…' : mintLabel}
+                </button>
+              </>
+            )}
           </div>
 
           {error && <div className="error">{error}</div>}

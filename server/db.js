@@ -45,13 +45,21 @@ try {
 try {
   db.exec('ALTER TABLE shares ADD COLUMN gif_file TEXT')
 } catch {}
+// Referral attribution — which local share minted into which token, and which
+// token referred this bake in. Additive ALTERs, matching the pattern above.
+try {
+  db.exec('ALTER TABLE shares ADD COLUMN token_id INTEGER')
+} catch {}
+try {
+  db.exec('ALTER TABLE shares ADD COLUMN ref_token_id INTEGER')
+} catch {}
 
 const insert = db.prepare(`
-  INSERT INTO shares (id, handle, display_name, image_file, page_file, meta_file, gif_file, image_cid, html_cid, meta_cid)
-  VALUES (@id, @handle, @displayName, @imageFile, @pageFile, @metaFile, @gifFile, @imageCid, @htmlCid, @metaCid)
+  INSERT INTO shares (id, handle, display_name, image_file, page_file, meta_file, gif_file, image_cid, html_cid, meta_cid, ref_token_id)
+  VALUES (@id, @handle, @displayName, @imageFile, @pageFile, @metaFile, @gifFile, @imageCid, @htmlCid, @metaCid, @refTokenId)
 `)
 
-export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid, imageBuffer, imageExt, gifBuffer, htmlBuffer, metaJson, shellBuffer }) {
+export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid, imageBuffer, imageExt, gifBuffer, htmlBuffer, metaJson, shellBuffer, refTokenId }) {
   const imageFile = imageBuffer ? `${id}${imageExt}` : null
   const gifFile = gifBuffer ? `${id}.gif` : null
   const pageFile = htmlBuffer ? `${id}.html` : null
@@ -73,6 +81,7 @@ export function saveShare({ id, handle, displayName, imageCid, htmlCid, metaCid,
     imageCid: imageCid || null,
     htmlCid: htmlCid || null,
     metaCid: metaCid || null,
+    refTokenId: refTokenId != null ? Number(refTokenId) : null,
   })
   return id
 }
@@ -81,8 +90,21 @@ export function getShare(id) {
   return db.prepare('SELECT * FROM shares WHERE id = ?').get(String(id)) || null
 }
 
-export function markMinted(id) {
-  db.prepare('UPDATE shares SET minted = 1 WHERE id = ?').run(String(id))
+export function markMinted(id, tokenId) {
+  db.prepare(tokenId != null ? 'UPDATE shares SET minted = 1, token_id = ? WHERE id = ?' : 'UPDATE shares SET minted = 1 WHERE id = ?').run(tokenId, String(id))
+}
+
+// A token's local share — the referrer mapping frontend needs: tokenId -> handle.
+export function shareByToken(tokenId) {
+  return db.prepare('SELECT * FROM shares WHERE token_id = ? AND minted = 1 LIMIT 1').get(Number(tokenId)) || null
+}
+
+// Handle dedup — the first baker of a handle owns the card. Re-stages of the
+// same handle reuse that bake instead of generating a fresh copy per click
+// (case-insensitive match; @ stripped upstream).
+export function shareByHandle(handle) {
+  if (!handle) return null
+  return db.prepare('SELECT * FROM shares WHERE lower(handle) = lower(?) ORDER BY created_at ASC, id ASC LIMIT 1').get(String(handle)) || null
 }
 
 export function recentShares(limit = 12) {

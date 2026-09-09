@@ -40,6 +40,7 @@ Options:
   --pfp    <path|url|dataURL>  Profile picture (used with --username/--name)
   --username <string>          X handle, e.g. "vitalik"
   --name   <string>            Display name
+  --chain-id <number>          Chain id shown on the card footer (default: 143)
   --card-json <path>           JSON file { front, back } of card data URLs
   --out    <path>              Output file (default: out/token.html)
   --help                       Show this help
@@ -60,7 +61,7 @@ if (args['card-json']) {
 }
 
 if ((args['username'] || args['name']) && !front) {
-  front = await renderCardSvg({ pfp: args['pfp'], username: args['username'], name: args['name'] })
+  front = await renderCardSvg({ pfp: args['pfp'], username: args['username'], name: args['name'], chainId: args['chain-id'] })
 }
 
 front = front ? await toDataUrl(front) : null

@@ -1,10 +1,22 @@
 // LanyardNFT ABI — the subset the mint frontend needs.
 export const abi = [
   {
+    type: 'event',
+    name: 'Minted',
+    inputs: [
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'tokenId', type: 'uint256', indexed: true },
+      { name: 'tokenURI', type: 'string', indexed: false },
+    ],
+  },
+  {
     type: 'function',
     name: 'mint',
     stateMutability: 'payable',
-    inputs: [{ name: 'uri', type: 'string' }],
+    inputs: [
+      { name: 'uri', type: 'string' },
+      { name: 'referrer', type: 'address' },
+    ],
     outputs: [{ name: 'tokenId', type: 'uint256' }],
   },
   {
@@ -41,5 +53,53 @@ export const abi = [
     stateMutability: 'view',
     inputs: [{ name: '', type: 'address' }],
     outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'ownerOf',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'referralBps',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'referrerOf',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'referralBalance',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'claimReferralFees',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'royaltyInfo',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenId', type: 'uint256' },
+      { name: 'salePrice', type: 'uint256' },
+    ],
+    outputs: [
+      { name: 'receiver', type: 'address' },
+      { name: 'royaltyAmount', type: 'uint256' },
+    ],
   },
 ]
