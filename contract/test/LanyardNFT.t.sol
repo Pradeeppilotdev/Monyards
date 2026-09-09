@@ -21,7 +21,7 @@ contract LanyardNFTTest is Test, IERC721Receiver {
     }
 
     function test_Mint() public {
-        uint256 tokenId = nft.mint(TOKEN_URI);
+        uint256 tokenId = nft.mint(TOKEN_URI, address(0));
         assertEq(tokenId, 0);
         assertEq(nft.ownerOf(0), address(this));
         assertEq(nft.tokenURI(0), TOKEN_URI);
@@ -34,32 +34,32 @@ contract LanyardNFTTest is Test, IERC721Receiver {
             address w = address(uint160(0x1000 + i));
             vm.deal(w, 1 ether);
             vm.prank(w);
-            nft.mint{value: 0 ether}(TOKEN_URI);
+            nft.mint{value: 0 ether}(TOKEN_URI, address(0));
         }
         vm.prank(address(0x2000));
         vm.expectRevert("max supply reached");
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
         assertEq(nft.totalSupply(), 10);
     }
 
     function test_OneMintPerWallet() public {
         address minter = address(0xb0b);
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
         vm.prank(minter);
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
         // Same wallet mints twice -> rejected.
         vm.prank(minter);
         vm.expectRevert("already minted");
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
         assertEq(nft.mintCount(minter), 1);
     }
 
     function test_TransferOwnershipDoesNotEnableRemint() public {
         address minter = address(0xb0b);
         address buddy = address(0xcc);
-        nft.mint(TOKEN_URI); // minted by address(this)
+        nft.mint(TOKEN_URI, address(0)); // minted by address(this)
         vm.prank(buddy);
-        nft.mint(TOKEN_URI); // buddy mints theirs
+        nft.mint(TOKEN_URI, address(0)); // buddy mints theirs
 
         // buddy transfers their token away -> balance 0, but mintCount stays.
         vm.prank(buddy);
@@ -70,32 +70,32 @@ contract LanyardNFTTest is Test, IERC721Receiver {
         // buddy should NOT be able to re-mint.
         vm.prank(buddy);
         vm.expectRevert("already minted");
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
     }
 
     function test_OnlyOwnerCannotBypassCap() public {
         nft.setMintPrice(0 ether);
-        nft.mint(TOKEN_URI); // owner mints once
+        nft.mint(TOKEN_URI, address(0)); // owner mints once
         // Even the owner cannot mint a second time.
         vm.expectRevert("already minted");
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
     }
 
     function test_MintDisabled() public {
         nft.setMintEnabled(false);
         vm.expectRevert("mint not enabled");
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
     }
 
     function test_PaidMintRequiresPayment() public {
         nft.setMintPrice(0.01 ether);
         vm.expectRevert("insufficient payment");
-        nft.mint(TOKEN_URI);
+        nft.mint(TOKEN_URI, address(0));
     }
 
     function test_PaidMintAcceptsExactPayment() public {
         nft.setMintPrice(0.01 ether);
-        uint256 tokenId = nft.mint{value: 0.01 ether}(TOKEN_URI);
+        uint256 tokenId = nft.mint{value: 0.01 ether}(TOKEN_URI, address(0));
         assertEq(tokenId, 0);
     }
 
@@ -130,7 +130,7 @@ contract LanyardNFTTest is Test, IERC721Receiver {
         uint256 before = minter.balance;
         // Mintee pays 0.05, cost 0.01 -> 0.04 refunded, net cost 0.01.
         vm.prank(minter);
-        nft.mint{value: 0.05 ether}(TOKEN_URI);
+        nft.mint{value: 0.05 ether}(TOKEN_URI, address(0));
         assertEq(minter.balance, before - 0.01 ether);
         assertEq(nft.balanceOf(minter), 1);
     }
@@ -142,7 +142,7 @@ contract LanyardNFTTest is Test, IERC721Receiver {
         nft.setMintPrice(0.01 ether);
         uint256 contractBefore = address(nft).balance;
         uint256 senderBefore = address(this).balance;
-        nft.mint{value: 0.01 ether}(TOKEN_URI);
+        nft.mint{value: 0.01 ether}(TOKEN_URI, address(0));
         // Contract keeps exactly the mint price (0.01).
         assertEq(address(nft).balance, contractBefore + 0.01 ether);
         // Sender only loses the 0.01 price (no extra withdrawal).
@@ -151,13 +151,13 @@ contract LanyardNFTTest is Test, IERC721Receiver {
 
     function test_RejectsEmptyUri() public {
         vm.expectRevert("invalid uri length");
-        nft.mint("");
+        nft.mint("", address(0));
     }
 
     function test_RejectsOversizedUri() public {
         string memory big = new string(2049);
         vm.expectRevert("invalid uri length");
-        nft.mint(big);
+        nft.mint(big, address(0));
     }
 
     function test_TwoStepOwnershipTransfer() public {

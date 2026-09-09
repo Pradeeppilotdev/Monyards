@@ -17,7 +17,7 @@ const SHELL_DIR = join(DATA_DIR, 'shells')
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '')
 
 function shareName(row) {
-  const display = row.display_name || (row.handle ? `@${row.handle}` : 'Monad Holder')
+  const display = row.display_name || (row.handle ? `@${row.handle}` : 'MonYard')
   return `Monad Lanyard · ${display}`
 }
 

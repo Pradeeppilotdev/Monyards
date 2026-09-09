@@ -22,7 +22,7 @@ import { bakeHtml } from '../animation/bake.mjs'
 import { cardGif } from './gif.js'
 import { buildShell } from './shell.js'
 import { pinFile, pinJson, pinningEnabled, unpin } from './ipfs.js'
-import { saveShare, getShare, markMinted, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR, SHELL_DIR } from './db.js'
+import { saveShare, getShare, markMinted, shareByToken, shareByHandle, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR, SHELL_DIR } from './db.js'
 import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -42,7 +42,7 @@ const CONFIG = {
   contractAddress: process.env.CONTRACT_ADDRESS || null,
   chainId: Number(process.env.CHAIN_ID || 10143),
   rpcUrl: process.env.RPC_URL || 'https://testnet-rpc.monad.xyz',
-  explorer: process.env.EXPLORER_URL || 'https://testnet.monadscan.com',
+  explorer: process.env.EXPLORER_URL || 'https://testnet.monadvision.com',
   name: 'Monad Lanyard',
   symbol: 'MLYD',
 }
@@ -153,10 +153,46 @@ function warmGateway(cid) {
 }
 
 app.post('/api/bake', bakeLimiter, async (req, res) => {
-  const { username, name, pfp, front, back, shareImage } = req.body || {}
+  const { username, name, pfp, front, back, shareImage, refTokenId } = req.body || {}
+const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() : ''
+  const displayName = name || (handle ? `@${handle}` : 'MonYard')
 
-  const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() : ''
-  const displayName = name || (handle ? `@${handle}` : 'Monad Holder')
+  // Handle dedup — the same handle always resolves to the first bake, so
+  // re-staging never spawns a second copy. First baker of a handle owns it.
+  const existing = handle ? shareByHandle(handle) : null
+  if (existing) {
+    return res.json({
+      shareId: existing.id,
+      handle,
+      displayName: existing.display_name || displayName,
+      tokenURI: PUBLIC_URL
+        ? `${PUBLIC_URL}/meta/${existing.id}`
+        : existing.meta_cid
+          ? `${METADATA_IMAGE_GATEWAY}/ipfs/${existing.meta_cid}`
+          : null,
+      animationUrl: existing.html_cid ? `ipfs://${existing.html_cid}` : null,
+      animationGateway: existing.html_cid ? gatewayUrl(existing.html_cid) : null,
+      image: existing.image_cid ? `ipfs://${existing.image_cid}` : null,
+      imageGateway: existing.image_cid ? gatewayUrl(existing.image_cid) : null,
+      shareUrl: PUBLIC_URL
+        ? `${PUBLIC_URL}/s/${existing.id}`
+        : existing.html_cid
+          ? gatewayUrl(existing.html_cid)
+          : null,
+      imageUrl: PUBLIC_URL && existing.image_file
+        ? `${PUBLIC_URL}/i/${existing.image_file}`
+        : existing.image_cid
+          ? gatewayUrl(existing.image_cid)
+          : null,
+      gifUrl: PUBLIC_URL && existing.gif_file ? `${PUBLIC_URL}/i/${existing.gif_file}` : undefined,
+      cached: true,
+    })
+  }
+
+  // Resolve the referrer's handle for the minted_via attribution. Trusted
+  // input — the UI shows it, the contract re-validates the address.
+  const refToken = refTokenId != null ? shareByToken(refTokenId) : null
+  const refHandle = refToken ? `${refToken.handle || refToken.display_name || 'a holder'}` : null
 
   // Per-handle cooldown — same identity hammering bake from rotating IPs.
   const now = Date.now()
@@ -171,7 +207,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
     // username/name/pfp when not supplied; palette is client-extracted and
     // sanitized against a strict #rrggbb whitelist before use).
     const palette = normalizePalette(req.body?.palette)
-    const frontUrl = front ? await toDataUrl(front) : await renderCardSvg({ pfp, username: handle, name: displayName, palette })
+    const frontUrl = front ? await toDataUrl(front) : await renderCardSvg({ pfp, username: handle, name: displayName, palette, chainId: CONFIG.chainId })
     const backUrl = back ? await toDataUrl(back) : null
     // The static image pinned for og:image + metadata.image should be a PNG —
     // X and most wallets can't render SVG. Clients pass a rasterized card;
@@ -252,6 +288,8 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
         { trait_type: 'handle', value: handle || 'unknown' },
         { trait_type: 'display_name', value: displayName },
         { trait_type: 'chain', value: `#${CONFIG.chainId}` },
+        // Referral provenance — who sent this visitor. Only when it resolves.
+        ...(refToken ? [{ trait_type: 'minted_via', value: refHandle }] : []),
       ],
     }
     const metaCid = await pinJson(metaJson)
@@ -272,6 +310,7 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
       htmlBuffer: selfPage ? Buffer.from(baked) : null,
       metaJson,
       shellBuffer: selfPage ? Buffer.from(buildShell(PUBLIC_URL, metaJson, shareId)) : null,
+      refTokenId: refToken ? Number(refTokenId) : null,
     })
     pruneShares(300)
       .forEach((cid) => unpin(cid).catch(() => {})) // free Pinata slots (fire-and-forget)
@@ -330,11 +369,29 @@ app.post('/api/bake', bakeLimiter, async (req, res) => {
 })
 
 // Mark a share as minted — prune never touches a live token's pins/files.
+// TokenId is stored so the referral chain can resolve tokenId -> handle.
 app.post('/api/minted', bakeLimiter, (req, res) => {
-  const { shareId } = req.body || {}
+  const { shareId, tokenId } = req.body || {}
   if (!shareId || !getShare(shareId)) return res.status(404).json({ error: 'share not found' })
-  markMinted(shareId)
+  markMinted(shareId, typeof tokenId === 'number' || typeof tokenId === 'string' ? Number(tokenId) : null)
   res.json({ ok: true })
+})
+
+// Resolve a minted token's creator for the referral chip
+// ("You're minting via @handle's card"). Null when unknown.
+app.get('/api/refinfo', (req, res) => {
+  const tokenId = Number(req.query.tokenId ?? NaN)
+  if (!Number.isFinite(tokenId)) return res.status(400).json({ error: 'provide a tokenId' })
+  const share = shareByToken(tokenId)
+  if (!share) return res.json({ info: null })
+  res.json({
+    info: {
+      tokenId,
+      handle: share.handle || null,
+      displayName: share.display_name || null,
+      pageUrl: `/s/${share.id}`,
+    },
+  })
 })
 
 // Stored token metadata — first-party, CORS-open, so explorers that fetch

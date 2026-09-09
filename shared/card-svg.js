@@ -67,8 +67,8 @@ function mixHex(a, b, t) {
 // misregistered ink ring, and the holder's name marker-written on a white
 // paper strip like a real conference lanyard. Per-mint palette is derived
 // from the portrait so no two cards share the same ink.
-export async function renderCardSvg({ pfp, username, name, palette }) {
-  const displayName = name || (username ? `@${username}` : 'Monad Holder')
+export async function renderCardSvg({ pfp, username, name, palette, chainId }) {
+  const displayName = name || (username ? `@${username}` : 'MonYard')
   const handle = username && name ? `@${username}` : ''
   const pal = normalizePalette(palette)
   const serial = serialFor(username || name || 'monad')
@@ -210,7 +210,7 @@ export async function renderCardSvg({ pfp, username, name, palette }) {
     ${bars}
     <rect x="446" y="818" width="102" height="34" rx="17" fill="#ffffff" fill-opacity="0.07"/>
     <rect x="446" y="818" width="102" height="34" rx="17" fill="none" stroke="#ffffff" stroke-opacity="0.28" stroke-width="1.4"/>
-    <text x="497" y="841" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="18" font-weight="800" letter-spacing="2" fill="#ffffff" fill-opacity="0.75">#10143</text>
+    <text x="497" y="841" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="18" font-weight="800" letter-spacing="2" fill="#ffffff" fill-opacity="0.75">#${chainId || 143}</text>
   </g>
 </svg>`;
   return `data:image/svg+xml;base64,${b64(svg)}`;
