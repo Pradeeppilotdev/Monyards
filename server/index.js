@@ -504,6 +504,54 @@ app.get('/api/wall', (req, res) => {
   res.json({ shares: recentShares(limit).map((s) => ({ ...s, imageUrl: `/i/${s.id}.png`, pageUrl: `/s/${s.id}` })) })
 })
 
+// Lightweight og-landing served to social/messenger crawlers so links to the
+// bare site unfurl. The real SPA shell loads a multi-MB AppKit bundle; X's
+// DOM renderer executes scripts and times out on that weight, so crawlers get
+// this tiny no-JS page while real browsers get the app.
+const SOCIAL_BOT_RE = /\b(Twitterbot|twitter|facebookexternalhit|Facebot|LinkedInBot|Slackbot|Discordbot|TelegramBot|WhatsApp|Viber|SkypeUriPreview|redditbot|Pinterest|Mastodon|MicroMessenger|vkShare|VKShare)\b/i
+function buildSiteLanding(siteUrl) {
+  const u = (siteUrl || '').replace(/\/$/, '')
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Monad Lanyard — mint your on-chain card</title>
+  <meta property="og:title" content="Monad Lanyard — mint your on-chain card"/>
+  <meta property="og:description" content="Mint your interactive Monad lanyard card. Free to share — mint to make it forever."/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:url" content="${u}/"/>
+  <meta property="og:image" content="${u}/i/mtud1cd60na3.png"/>
+  <meta property="og:image:width" content="1200"/>
+  <meta property="og:image:height" content="1812"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:title" content="Monad Lanyard — mint your on-chain card"/>
+  <meta name="twitter:description" content="Mint your interactive Monad lanyard card. Free to share — mint to make it forever."/>
+  <meta name="twitter:image" content="${u}/i/mtud1cd60na3.png"/>
+  <link rel="icon" href="/favicon.svg"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0a0612;color:#f2eefe;font-family:system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;padding:32px}
+    img{width:260px;border-radius:14px;box-shadow:0 24px 60px rgba(124,92,255,.28)}
+    h1{font-size:22px}
+    p{color:#a89fc9;font-size:14px}
+  </style>
+</head>
+<body>
+  <img src="${u}/i/mtud1cd60na3.png" alt="Monad Lanyard card"/>
+  <h1>Monad Lanyard</h1>
+  <p>Mint your interactive Monad lanyard card. Free to share — mint to make it forever.</p>
+</body>
+</html>`
+}
+app.use((req, res, next) => {
+  if (req.path === '/' && SOCIAL_BOT_RE.test(req.headers['user-agent'] || '')) {
+    res.set('Cache-Control', 'no-cache')
+    return res.type('text/html').send(buildSiteLanding(PUBLIC_URL))
+  }
+  next()
+})
+
 // Serve the built mint DApp so one domain hosts everything — the frontend,
 // /api, /i, /s, /meta. Requires `npm run build` in mint/. API/storage routes
 // above are matched first; anything else falls through to the DApp shell.
