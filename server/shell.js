@@ -11,6 +11,8 @@ export function buildShell(publicUrl, meta, id) {
   const base = (publicUrl || '').replace(/\/$/, '')
   const pageUrl = `${base}/full/${id}`
   const imageUrl = meta?.og_image || meta?.image || ''
+  const imgW = Number(meta?.og_image_width) || 600
+  const imgH = Number(meta?.og_image_height) || 906
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -22,8 +24,8 @@ export function buildShell(publicUrl, meta, id) {
   <meta property="og:type" content="website"/>
   <meta property="og:url" content="${base}/s/${id}"/>
   <meta property="og:image" content="${esc(imageUrl)}"/>
-  <meta property="og:image:width" content="1080"/>
-  <meta property="og:image:height" content="1350"/>
+  <meta property="og:image:width" content="${imgW}"/>
+  <meta property="og:image:height" content="${imgH}"/>
   <meta name="twitter:card" content="summary_large_image"/>
   <meta name="twitter:title" content="${esc(meta?.name || '')}"/>
   <meta name="twitter:description" content="${esc(meta?.description || '')}"/>

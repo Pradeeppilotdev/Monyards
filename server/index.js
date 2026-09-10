@@ -17,7 +17,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import rateLimit from 'express-rate-limit'
-import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette } from '../shared/card-svg.js'
+import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette, CARD_W, CARD_H } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
 import { cardGif } from './gif.js'
 import { buildShell } from './shell.js'
@@ -59,6 +59,38 @@ function gatewayUrl(cid) {
 }
 
 const METADATA_IMAGE_GATEWAY = (process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud').replace(/\/$/, '')
+
+// Read image pixel dimensions from a PNG or JPEG buffer so the share shell can
+// declare the real og:image ratio — X crops the thumbnail to the declared
+// ratio, so a mismatch (card is 600x906) chops the card when it's shared.
+function getImageDims(buf) {
+  if (!buf || buf.length < 24) return null
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    // PNG — IHDR begins at byte 16 (8 sig + 4 len + 4 "IHDR").
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    // JPEG — scan segments for a start-of-frame marker carrying dims.
+    let i = 2
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) {
+        i++
+        continue
+      }
+      const marker = buf[i + 1]
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+        i += 2
+        continue
+      }
+      const len = buf.readUInt16BE(i + 2)
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) }
+      }
+      i += 2 + len
+    }
+  }
+  return null
+}
 
 const app = express()
 app.use(cors())
@@ -265,6 +297,10 @@ const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() 
     }
     const selfGif = PUBLIC_URL && gifBuffer ? `${PUBLIC_URL}/i/${shareId}.gif` : null
 
+    // Real og:image dimensions (the client's rasterized card) so the shell
+    // declares the true ratio — X crops og:image to the declared ratio.
+    const dims = getImageDims(imageBuffer) || { w: CARD_W, h: CARD_H }
+
     const metaJson = {
       name: title,
       description,
@@ -275,6 +311,8 @@ const handle = typeof username === 'string' ? username.replace(/^@/, '').trim() 
       // Separate field so the share shell/og:image keeps the static PNG for
       // reliable unfurls — wallets read `image`, crawlers read og:image.
       og_image: selfImage || `${METADATA_IMAGE_GATEWAY}/ipfs/${imageCid}`,
+      og_image_width: dims.w,
+      og_image_height: dims.h,
       // First-party /s/:id when PUBLIC_URL is set — the only fully reliable
       // https host for the 6.6MB page. Otherwise ipfs:// (the ecosystem
       // standard; gateway.pinata.cloud is NOT an option here — it blocks
