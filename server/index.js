@@ -464,22 +464,31 @@ app.get('/i/:id.:ext(png|jpg|jpeg|webp|svg|gif)', (req, res) => {
 // Branded og:image for the bare site link — rendered once, cached in memory,
 // then cached at the edge for a year (immutable static asset).
 let heroPng = null
-let heroPngError = null
 let heroRendering = null
-app.get('/og-hero.png', (_req, res) => {
+function heroCardDataUrl() {
+  const row = getShare('mtud1cd60na3')
+  if (!row?.image_file) return null
+  const file = path.join(IMAGE_DIR, row.image_file)
+  return `data:image/jpeg;base64,${readFileSync(file).toString('base64')}`
+}
+app.get('/og-hero-v2.png', (_req, res) => {
   if (heroPng) {
     res.set('Content-Type', 'image/png')
     res.set('Cache-Control', 'public, max-age=31536000, immutable')
     return res.send(heroPng)
   }
   if (!heroRendering) {
-    heroRendering = renderHeroPng()
+    heroRendering = (async () => {
+      const dataUrl = heroCardDataUrl()
+      if (!dataUrl) throw new Error('brand card not baked yet')
+      return renderHeroPng(dataUrl)
+    })()
       .then((png) => {
         heroPng = png
         return png
       })
       .catch((err) => {
-        heroPngError = err
+        console.error('hero render failed:', err.message)
         return null
       })
       .finally(() => (heroRendering = null))
@@ -552,18 +561,18 @@ function buildSiteLanding(siteUrl) {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Monad Lanyard — mint your on-chain card</title>
-  <meta property="og:title" content="Monad Lanyard — mint your on-chain card"/>
-  <meta property="og:description" content="Mint your interactive Monad lanyard card. Free to share — mint to make it forever."/>
+  <title>Monad Lanyard | Mint your on-chain card</title>
+  <meta property="og:title" content="Monad Lanyard | Mint your on-chain card"/>
+  <meta property="og:description" content="Mint your interactive Monad lanyard card. Free to share, mint to make it forever."/>
   <meta property="og:type" content="website"/>
   <meta property="og:url" content="${u}/"/>
-  <meta property="og:image" content="${u}/og-hero.png"/>
+  <meta property="og:image" content="${u}/og-hero-v2.png"/>
   <meta property="og:image:width" content="${HERO_W}"/>
   <meta property="og:image:height" content="${HERO_H}"/>
   <meta name="twitter:card" content="summary_large_image"/>
-  <meta name="twitter:title" content="Monad Lanyard — mint your on-chain card"/>
-  <meta name="twitter:description" content="Mint your interactive Monad lanyard card. Free to share — mint to make it forever."/>
-  <meta name="twitter:image" content="${u}/og-hero.png"/>
+  <meta name="twitter:title" content="Monad Lanyard | Mint your on-chain card"/>
+  <meta name="twitter:description" content="Mint your interactive Monad lanyard card. Free to share, mint to make it forever."/>
+  <meta name="twitter:image" content="${u}/og-hero-v2.png"/>
   <link rel="icon" href="/favicon.svg"/>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -574,7 +583,7 @@ function buildSiteLanding(siteUrl) {
   </style>
 </head>
 <body>
-  <img src="${u}/og-hero.png" alt="Monad Lanyard"/>
+  <img src="${u}/og-hero-v2.png" alt="Monad Lanyard"/>
   <h1>Monad Lanyard</h1>
   <p>Mint your interactive Monad lanyard card. Free to share — mint to make it forever.</p>
 </body>
