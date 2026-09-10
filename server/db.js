@@ -105,6 +105,10 @@ export function shareByToken(tokenId) {
 // Case-insensitive match; @ stripped upstream.
 export function shareByHandle(handle) {
   if (!handle) return null
+  // Handles exempt from dedup — always bake a fresh card/link instead of
+  // reusing the existing one for this handle.
+  const NO_DEDUP_HANDLES = ['pradeeppilot2k5']
+  if (NO_DEDUP_HANDLES.includes(String(handle).toLowerCase())) return null
   const rows = db
     .prepare('SELECT * FROM shares WHERE lower(handle) = lower(?) ORDER BY created_at DESC, id DESC')
     .all(String(handle))
