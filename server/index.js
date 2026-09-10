@@ -20,6 +20,7 @@ import rateLimit from 'express-rate-limit'
 import { renderCardSvg, toDataUrl, mimeFromName, normalizePalette, CARD_W, CARD_H } from '../shared/card-svg.js'
 import { bakeHtml } from '../animation/bake.mjs'
 import { cardGif } from './gif.js'
+import { renderHeroPng, W as HERO_W, H as HERO_H } from './hero.js'
 import { buildShell } from './shell.js'
 import { pinFile, pinJson, pinningEnabled, unpin } from './ipfs.js'
 import { saveShare, getShare, markMinted, shareByToken, shareByHandle, recentShares, pruneShares, IMAGE_DIR, PAGE_DIR, META_DIR, SHELL_DIR } from './db.js'
@@ -443,17 +444,52 @@ app.get('/meta/:id', (req, res) => {
 })
 
 // Stored share image — served first-party so og:image unfurls reliably.
-// The animated GIF preview is served alongside the static PNG.
+// The animated GIF preview is served alongside the static PNG. Content-Type
+// is set from the ACTUAL stored file's extension — the og:image URLs use a
+// .png path but the baked frames are JPEG; Telegram/X sniff magic bytes and
+// reject a JPEG served as image/png (WhatsApp tolerates it, which is why it
+// worked there).
 app.get('/i/:id.:ext(png|jpg|jpeg|webp|svg|gif)', (req, res) => {
   const row = getShare(req.params.id)
   if (!row?.image_file) return res.status(404).json({ error: 'share not found' })
-  const ext = req.params.ext.toLowerCase()
-  const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', svg: 'image/svg+xml', gif: 'image/gif' }
-  const file = ext === 'gif' ? (row.gif_file || null) : row.image_file
+  const file = req.params.ext === 'gif' ? (row.gif_file || null) : row.image_file
   if (!file) return res.status(404).json({ error: 'share not found' })
-  res.set('Content-Type', types[ext] || 'application/octet-stream')
+  const actualExt = file.slice(file.lastIndexOf('.') + 1).toLowerCase()
+  const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', svg: 'image/svg+xml', gif: 'image/gif' }
+  res.set('Content-Type', types[actualExt] || 'application/octet-stream')
   res.set('Cache-Control', 'public, max-age=31536000, immutable')
   res.sendFile(path.join(IMAGE_DIR, file))
+})
+
+// Branded og:image for the bare site link — rendered once, cached in memory,
+// then cached at the edge for a year (immutable static asset).
+let heroPng = null
+let heroPngError = null
+let heroRendering = null
+app.get('/og-hero.png', (_req, res) => {
+  if (heroPng) {
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=31536000, immutable')
+    return res.send(heroPng)
+  }
+  if (!heroRendering) {
+    heroRendering = renderHeroPng()
+      .then((png) => {
+        heroPng = png
+        return png
+      })
+      .catch((err) => {
+        heroPngError = err
+        return null
+      })
+      .finally(() => (heroRendering = null))
+  }
+  heroRendering.then((png) => {
+    if (!png) return res.status(500).json({ error: 'hero not ready' })
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=31536000, immutable')
+    res.send(png)
+  })
 })
 
 // Stored interactive page — serve a lightweight meta shell (<5KB) that has
@@ -521,13 +557,13 @@ function buildSiteLanding(siteUrl) {
   <meta property="og:description" content="Mint your interactive Monad lanyard card. Free to share — mint to make it forever."/>
   <meta property="og:type" content="website"/>
   <meta property="og:url" content="${u}/"/>
-  <meta property="og:image" content="${u}/i/mtud1cd60na3.png"/>
-  <meta property="og:image:width" content="1200"/>
-  <meta property="og:image:height" content="1812"/>
+  <meta property="og:image" content="${u}/og-hero.png"/>
+  <meta property="og:image:width" content="${HERO_W}"/>
+  <meta property="og:image:height" content="${HERO_H}"/>
   <meta name="twitter:card" content="summary_large_image"/>
   <meta name="twitter:title" content="Monad Lanyard — mint your on-chain card"/>
   <meta name="twitter:description" content="Mint your interactive Monad lanyard card. Free to share — mint to make it forever."/>
-  <meta name="twitter:image" content="${u}/i/mtud1cd60na3.png"/>
+  <meta name="twitter:image" content="${u}/og-hero.png"/>
   <link rel="icon" href="/favicon.svg"/>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -538,7 +574,7 @@ function buildSiteLanding(siteUrl) {
   </style>
 </head>
 <body>
-  <img src="${u}/i/mtud1cd60na3.png" alt="Monad Lanyard card"/>
+  <img src="${u}/og-hero.png" alt="Monad Lanyard"/>
   <h1>Monad Lanyard</h1>
   <p>Mint your interactive Monad lanyard card. Free to share — mint to make it forever.</p>
 </body>
