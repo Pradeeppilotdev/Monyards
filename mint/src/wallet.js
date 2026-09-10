@@ -41,6 +41,7 @@ export const wagmiAdapter = new WagmiAdapter({
   networks: [monadChain],
   projectId: HAS_APPKIT ? PROJECT_ID : '00000000000000000000000000000000',
   ssr: false,
+  reconnectOnMount: false,
 })
 
 export const appKitModal = HAS_APPKIT
@@ -49,6 +50,7 @@ export const appKitModal = HAS_APPKIT
       networks: [monadChain],
       projectId: PROJECT_ID,
       metadata,
+      autoConnect: false,
       features: { analytics: false },
     })
   : null
